@@ -67,9 +67,12 @@ its match language is D15's, not CEL. Shipped so far: CLI scaffold, the box
 (§3.3), the judge + inspecting gateway (§3.7/§3.9 seed), and **credential
 injection** — the model key now lives in a host-side vault
 (`~/.roster/vault/`) and is injected in transit; the box carries only a
-sentinel (build-plan increment 3, injection half; §3.7 "keys… injects in
-transit"). The hard-budget half of increment 3 (gateway declines to inject
-on an empty ledger) and OAuth token refresh are still pending — see
+sentinel; and **gateway-owned OAuth refresh** (the gateway refreshes expired
+tokens itself via a provider table in `src/providers.ts` — no pi dependency
+in the credential path; single-flight, atomic vault write, fail-closed, audit
+to `runs/credentials.jsonl`). This is build-plan increment 3's injection +
+refresh. The hard-budget half (gateway declines to inject on an empty ledger)
+attaches at the same pre-inject checkpoint and is still pending — see
 `docs/injection-spec.md`.
 
 ---

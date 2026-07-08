@@ -15,8 +15,7 @@ tests below pass. Findings:
   `authorization` + `chatgpt-account-id` in transit. Removing the vault
   entry makes the same call **deny** at the gateway (fail closed); the box
   can't see the vault.
-- Deferred as planned: OAuth **refresh**. The injected token is valid until
-  ~2026-07-15; past that, `vault-sync` must be re-run until refresh lands.
+- OAuth **refresh** is now implemented (the gateway owns it — see below).
 
 **Status originally: spec.** The increment after the judge. Fulfills handoff
 D8 and build-plan increment 3: **the box stops holding the model credential;
@@ -127,14 +126,50 @@ in the box) now holds for the model key too, not just search keys.
 3. `box.ts` sentinel; run the box → **acceptance 1, 2**. Commit.
 4. **Acceptance 3, 4**; docs + decision-log note. Commit.
 
-## What grows from here
+## OAuth refresh (implemented 2026-07-08)
 
-- **OAuth refresh** (the deferred half): the gateway checks `expires`, and
-  on expiry calls the provider's token endpoint with the refresh token,
-  updates the vault, injects the fresh access token — serving the credential
-  "only while the ledger is positive" becomes a gateway concern, never the
-  box's. This is also where the **hard budget stop** (D8) attaches: an empty
-  ledger ⇒ the gateway declines to inject ⇒ the model call fails at the
-  door, mid-run if need be.
-- **Real vault** (secrets manager / encrypted-at-rest) replacing the plain
-  JSON files; `vault-sync` becomes the owner's credential-loading path.
+The gateway owns refresh — **no dependency on pi's code in the credential
+path.** Before injecting, it calls `getFreshCredential(name)`, which refreshes
+if the token has expired (within a 60 s skew) and returns a usable credential.
+
+- **`src/providers.ts`** — a per-provider table of *public* constants (token
+  endpoint, client id, body encoding, expiry skew), lifted once from each
+  provider's own OAuth client, plus a standard `refresh_token` grant. Adding
+  a provider is a table row + those few facts.
+- **`src/vault.ts:getFreshCredential`** — expiry check → refresh → **merge**
+  (so `accountId`/`type` survive; refresh returns only access/refresh/expires)
+  → **atomic write** (temp + rename; a half-written rotation would lock us
+  out) → audit line to `runs/credentials.jsonl` (never token values). A
+  **single-flight lock** gives one refresh lane per credential, so concurrent
+  expired requests don't double-refresh and fail on the rotated token.
+- **Fail closed**: a refresh error ⇒ the gateway denies the request; it never
+  injects a stale token.
+
+**Verified**: 7 unit tests (expiry decision, response mapping, provider skew,
+malformed-response fail-closed) + an integration test driving the full success
+path against a local mock endpoint (expired → refresh → rotation captured →
+merge → persisted). Live: the real Anthropic endpoint returned a structured
+`invalid_grant` (its refresh token is dead — proves endpoint/client_id/
+encoding + the fail-closed path); a box run with a valid openai-codex token
+confirmed the valid path skips refresh. **Not** exercised: a real
+openai-codex rotation — it would consume/rotate the in-use token and desync
+the host `pi` login, so it's left to happen naturally at expiry.
+
+**Operational contract — refresh tokens rotate.** Once the gateway refreshes,
+the provider invalidates the old refresh token, so the host's
+`~/.pi/agent/auth.json` goes stale. The **vault becomes the sole source of
+truth**; `vault-sync` is a one-time bootstrap, *not* something to re-run
+(it would import a now-dead refresh token). If the vault chain ever breaks,
+re-login host-side via pi, then `vault-sync` once.
+
+## What still grows from here
+
+- **Hard budget stop** (D8) attaches at this same pre-inject checkpoint: an
+  empty ledger ⇒ the gateway declines to refresh/inject ⇒ the model call
+  fails at the door, mid-run if need be.
+- **Own the initial OAuth** (device-code/PKCE login) if we ever need the
+  gateway to acquire credentials itself, rather than bootstrapping via a
+  host-side pi login + `vault-sync`.
+- **Real vault** (secrets manager / encrypted-at-rest, or an OS keychain)
+  replacing the plain-JSON files — now more pressing, since after the first
+  refresh the vault is the *only* live copy of the credential.

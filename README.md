@@ -71,4 +71,8 @@ node src/cli.ts vault-sync           # load host pi credentials into the vault
 
 So the model key is never inside the container; a rule with `"inject"`
 swaps the box's sentinel for the real token on the way to the model host,
-and a missing credential fails closed (deny). See docs/injection-spec.md.
+and a missing credential fails closed (deny). The gateway also **refreshes**
+expired OAuth tokens itself (owning the provider constants in
+`src/providers.ts` — no dependency on the engine's code), so injected
+credentials stay live; every refresh is logged to `runs/credentials.jsonl`.
+See docs/injection-spec.md.
