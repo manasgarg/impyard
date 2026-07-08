@@ -9,5 +9,8 @@
   },
   "scripts": {
     "test": "node --test test/"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.80.3"
   }
 }
