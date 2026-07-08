@@ -21,8 +21,9 @@ function printHelp(): void {
   }
   console.log("\ndev verbs:");
   console.log('  box         run one pi session in the locked-down container:');
-  console.log('              node src/cli.ts box [--ceiling <minutes>] "<prompt>"');
-  console.log("              (needs the gateway running: node src/gateway.ts)");
+  console.log('              node src/cli.ts box [--worker <name>] [--ceiling <minutes>] "<prompt>"');
+  console.log("              (--worker sets the budget subject org/<name>, default adhoc;");
+  console.log("               needs the gateway running: cd gateway && ROSTER_ROOT=.. cargo run)");
   console.log("  vault-sync  load host pi credentials into the gateway's vault");
 }
 
@@ -42,6 +43,16 @@ if (verb === undefined || verb === "help" || verb === "--help") {
       process.exit(1);
     }
   }
+  let worker = "adhoc";
+  const wi = rest.indexOf("--worker");
+  if (wi !== -1) {
+    worker = String(rest[wi + 1] ?? "").trim();
+    rest.splice(wi, 2);
+    if (worker === "") {
+      console.error("roster: --worker wants a name");
+      process.exit(1);
+    }
+  }
   const prompt = rest.join(" ").trim();
   if (prompt === "") {
     console.error('roster: box needs a prompt: node src/cli.ts box "<prompt>"');
@@ -49,7 +60,7 @@ if (verb === undefined || verb === "help" || verb === "--help") {
   }
   const { runBox } = await import("./box.ts");
   try {
-    const result = await runBox(prompt, ceiling);
+    const result = await runBox(prompt, ceiling, worker);
     console.log(`box ${result.runId} ended by ${result.endedBy} (exit code ${result.exitCode})`);
     console.log(`outputs: ${result.runDir}`);
     process.exit(result.endedBy === "ceiling" ? 2 : (result.exitCode ?? 1));

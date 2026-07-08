@@ -1,12 +1,25 @@
 # Metering & budgets (spec)
 
-**Status: B1–B2 implemented (2026-07-08); B3–B4 pending.** B1 = CEL currency
-metering, logged; B2 = the ledger + limits + enforcement (the hard stop) on
-count currencies, org-global, with boot-rehydration. Verified live: a
-`model_calls` cap denies the over-cap call with `402` (the call that crosses
-completes, the next is refused), and the counter survives a gateway restart.
-Next: B3 token metering (response tap + adversarial defenses), B4 namespaced
-identity.
+**Status: B1, B2, B4 implemented (2026-07-08); B3 deferred.** B1 = CEL currency
+metering, logged; B2 = ledger + limits + enforcement (the hard stop) with
+boot-rehydration; B4 = namespaced identity — un-spoofable per-worker subjects
+with ancestor rollup. Verified live: a cap denies the over-cap call with `402`
+(the crossing call completes, the next is refused), the counter survives a
+gateway restart, and — across two identities — a per-worker cap denies only
+that worker while the org-wide cap aggregates both. **Deferred: B3** token
+metering (response tap + adversarial defenses); until then currencies are
+count/request-derived (usd via per-call price works; per-token cost is B3).
+
+**How B4 attributes identity (un-spoofable).** The trusted runner mints a
+random token per box run, registers `~/.roster/identity/<token>.json =
+{subject}` (off the box mount), and hands the box the token as proxy
+credentials (`HTTP(S)_PROXY=http://<token>@…`). The box's client sends it as
+`Proxy-Authorization` on CONNECT; the gateway resolves token → subject. A box
+holds only its own token, so it can't claim another worker's identity; an
+absent/unknown token falls back to `org`. Verified: pi (undici) forwards the
+proxy credentials, and a `box --worker yuko` run is attributed to `org/yuko`.
+Counters are keyed by the *limit's* scope, so all subjects under a scope roll
+up into its counter automatically.
 
 **Design.** Built on the Rust gateway, with CEL (D18). Realizes the
 owner's mental model: a **call log** as the substrate, **namespaced identity**,

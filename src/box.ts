@@ -11,7 +11,8 @@
 // increment (docs/roster-handoff.md §9, increment 3).
 
 import { spawn, execFileSync } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -107,7 +108,7 @@ function preparePihome(pihome: string): { hasAuthFile: boolean } {
   return { hasAuthFile };
 }
 
-export async function runBox(prompt: string, ceilingMinutes: number = 30): Promise<BoxResult> {
+export async function runBox(prompt: string, ceilingMinutes: number = 30, worker: string = "adhoc"): Promise<BoxResult> {
   await ensureLockdown(); // throws — never proceeds with open egress
   if (!existsSync(HOST_CA_CERT)) {
     throw new Error(`the gateway CA is not present at ${HOST_CA_CERT} — start the gateway first (it creates the CA)`);
@@ -126,7 +127,18 @@ export async function runBox(prompt: string, ceilingMinutes: number = 30): Promi
     throw new Error("no model credentials: neither ~/.pi/agent/auth.json nor ANTHROPIC_API_KEY exists");
   }
 
-  const proxyUrl = `http://host.docker.internal:${GATEWAY_PORT}`;
+  // Un-spoofable identity: mint a random token, register it (token → subject)
+  // in ~/.roster/identity/ (off the box mount), and hand the box the token as
+  // proxy credentials. The box can present only its own token — it can't claim
+  // another worker's identity. The gateway resolves token → subject.
+  const subject = `org/${worker}`;
+  const identityToken = randomUUID();
+  const identityDir = join(homedir(), ".roster", "identity");
+  const identityFile = join(identityDir, `${identityToken}.json`);
+  mkdirSync(identityDir, { recursive: true });
+  writeFileSync(identityFile, JSON.stringify({ subject }) + "\n", { mode: 0o600 });
+
+  const proxyUrl = `http://${identityToken}@host.docker.internal:${GATEWAY_PORT}`;
   const containerName = `roster-box-${runId}`;
   const envFile = join(repoRoot, ".env");
   const uid = process.getuid?.() ?? 1000;
@@ -184,6 +196,11 @@ export async function runBox(prompt: string, ceilingMinutes: number = 30): Promi
   clearTimeout(ceiling);
   process.off("SIGINT", onSignal);
   process.off("SIGTERM", onSignal);
+  try {
+    rmSync(identityFile); // the token is single-use; retire it
+  } catch {
+    // already gone — fine
+  }
 
   return { runId, runDir, endedBy, exitCode };
 }

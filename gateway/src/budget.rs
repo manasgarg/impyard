@@ -126,6 +126,7 @@ pub fn compute_spend(
     let _ = ctx.add_variable("request", request);
     let _ = ctx.add_variable("response", response.clone());
     let _ = ctx.add_variable("decision", decision);
+    let _ = ctx.add_variable("subject", gr.worker.clone().unwrap_or_default());
     let _ = ctx.add_variable("vars", policy.vars.clone());
 
     let mut out: HashMap<String, f64> = HashMap::new();

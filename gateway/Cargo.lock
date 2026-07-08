@@ -1069,6 +1069,7 @@ dependencies = [
 name = "roster-gateway"
 version = "0.0.1"
 dependencies = [
+ "base64",
  "bytes",
  "cel-interpreter",
  "http-body-util",

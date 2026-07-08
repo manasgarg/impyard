@@ -176,6 +176,40 @@ fn empty() -> Body {
     Empty::<Bytes>::new().map_err(|never| match never {}).boxed()
 }
 
+// ── identity ────────────────────────────────────────────────────────────────
+
+/// Resolve the call's subject from the CONNECT's Proxy-Authorization. The
+/// trusted runner sets `HTTP(S)_PROXY=http://<token>@…` and registers
+/// `~/.roster/identity/<token>.json = {subject}` (off the box mount), so the box
+/// can present only its own random token — it can't claim another worker's
+/// identity. Unknown/absent ⇒ "org" (host-side tools with no creds).
+fn resolve_subject(proxy_auth: Option<&hyper::header::HeaderValue>) -> String {
+    let default = || "org".to_string();
+    let Some(b64) = proxy_auth
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Basic "))
+    else {
+        return default();
+    };
+    use base64::Engine;
+    let token = base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .ok()
+        .and_then(|d| String::from_utf8(d).ok())
+        .map(|creds| creds.split(':').next().unwrap_or("").to_string())
+        .unwrap_or_default();
+    if token.is_empty() {
+        return default();
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let path = std::path::Path::new(&home).join(".roster").join("identity").join(format!("{token}.json"));
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.get("subject").and_then(|s| s.as_str()).map(String::from))
+        .unwrap_or_else(default)
+}
+
 fn deny_response(verdict: Verdict, rule: Option<&str>) -> Response<Body> {
     let rule_json = rule.map(|r| format!("\"{r}\"")).unwrap_or_else(|| "null".into());
     let mut resp = Response::new(full(&format!(
@@ -212,11 +246,12 @@ async fn outer(req: Request<Incoming>, tls: TlsAcceptor, client: UpstreamClient)
         let authority = req.uri().authority().map(|a| a.to_string()).unwrap_or_default();
         let host = authority.split(':').next().unwrap_or("").to_string();
         let port: u16 = authority.split(':').nth(1).and_then(|p| p.parse().ok()).unwrap_or(443);
+        let subject = resolve_subject(req.headers().get(hyper::header::PROXY_AUTHORIZATION));
 
         // Tunnel escape hatch: judge host+port only; if the rule says tunnel,
         // raw-pipe without terminating (host-only visibility).
         let pre = GovernedRequest {
-            worker: None,
+            worker: Some(subject.clone()),
             protocol: "https".into(),
             method: "CONNECT".into(),
             host: host.clone(),
@@ -254,7 +289,7 @@ async fn outer(req: Request<Incoming>, tls: TlsAcceptor, client: UpstreamClient)
                 Err(_) => return,
             };
             let io = TokioIo::new(tls_stream);
-            let svc = service_fn(move |r| handle(r, "https", host.clone(), client.clone()));
+            let svc = service_fn(move |r| handle(r, "https", host.clone(), subject.clone(), client.clone()));
             let _ = server_http1::Builder::new().serve_connection(io, svc).await;
         });
         Ok(Response::new(empty()))
@@ -264,7 +299,8 @@ async fn outer(req: Request<Incoming>, tls: TlsAcceptor, client: UpstreamClient)
         Ok(resp)
     } else if req.uri().scheme_str() == Some("http") {
         let host = req.uri().host().unwrap_or("").to_string();
-        handle(req, "http", host, client).await
+        let subject = resolve_subject(req.headers().get(hyper::header::PROXY_AUTHORIZATION));
+        handle(req, "http", host, subject, client).await
     } else {
         let mut resp = Response::new(full("{\"error\":\"not a proxy request\"}"));
         *resp.status_mut() = StatusCode::BAD_REQUEST;
@@ -274,7 +310,7 @@ async fn outer(req: Request<Incoming>, tls: TlsAcceptor, client: UpstreamClient)
 
 /// A decrypted (or plain-http) request: buffer body, judge, record, then deny
 /// or forward. Response streams back.
-async fn handle(req: Request<Incoming>, protocol: &str, host: String, client: UpstreamClient) -> Result<Response<Body>, BErr> {
+async fn handle(req: Request<Incoming>, protocol: &str, host: String, subject: String, client: UpstreamClient) -> Result<Response<Body>, BErr> {
     let (parts, incoming) = req.into_parts();
     let path = parts.uri.path().to_string();
     let query = parts.uri.query().unwrap_or("").to_string();
@@ -286,7 +322,7 @@ async fn handle(req: Request<Incoming>, protocol: &str, host: String, client: Up
     let body_bytes = incoming.collect().await.map(|c| c.to_bytes()).unwrap_or_default();
     let mcp = lift_mcp(&headers, &body_bytes);
     let gr = GovernedRequest {
-        worker: None,
+        worker: Some(subject.clone()),
         protocol: protocol.into(),
         method: method.clone(),
         host: host.clone(),
@@ -327,9 +363,8 @@ async fn handle(req: Request<Incoming>, protocol: &str, host: String, client: Up
         }
     }
 
-    // Meter the spend this call draws, then enforce the budget (B2). Org-global
-    // subject until worker identity lands (B4).
-    const SUBJECT: &str = "org";
+    // Meter the spend this call draws, then enforce the budget against the
+    // call's subject (B4: attributed identity; limits roll up its ancestors).
     let budget = crate::budget::load_budget();
     let now = crate::util::now_ms();
     let spend = if verdict == Verdict::Allow {
@@ -341,7 +376,7 @@ async fn handle(req: Request<Incoming>, protocol: &str, host: String, client: Up
     // Over a limit ⇒ deny before forwarding (the hard stop). Count currencies
     // are known now; token currencies debit post-response in B3.
     if verdict == Verdict::Allow {
-        if let Some(reason) = crate::ledger::check(SUBJECT, &spend, &budget.limits, now) {
+        if let Some(reason) = crate::ledger::check(&subject, &spend, &budget.limits, now) {
             record(&gr, Verdict::Deny, rule.as_deref(), None, &HashMap::new(), Some(&reason));
             let mut resp = Response::new(full(&format!("{{\"error\":\"budget exceeded\",\"detail\":\"{reason}\"}}")));
             *resp.status_mut() = StatusCode::PAYMENT_REQUIRED;
@@ -353,7 +388,7 @@ async fn handle(req: Request<Incoming>, protocol: &str, host: String, client: Up
     if verdict != Verdict::Allow {
         return Ok(deny_response(verdict, rule.as_deref()));
     }
-    crate::ledger::debit(SUBJECT, &spend, &budget.limits, now);
+    crate::ledger::debit(&subject, &spend, &budget.limits, now);
 
     // Forward with the buffered body, swapping the sentinel for the real
     // credential (injected headers overwrite the box's).

@@ -21,13 +21,16 @@ fn counters() -> &'static Mutex<HashMap<String, Counter>> {
     C.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn key(subject: &str, currency: &str, window: Window) -> String {
-    format!("{subject}|{currency}|{}", window.label())
+fn key(scope: &str, currency: &str, window: Window) -> String {
+    format!("{scope}|{currency}|{}", window.label())
 }
 
-/// B2: exact match ("org" == "org"). Namespaced ancestor matching is B4.
+/// A limit at `scope` governs `subject` if the subject is that scope or nests
+/// under it — so a limit at "org" is the fleet aggregate, "org/yuko" is one
+/// worker. Counters are keyed by the *limit's* scope, so all subjects under a
+/// scope roll up into its counter automatically.
 fn scope_applies(limit_scope: &str, subject: &str) -> bool {
-    limit_scope == subject
+    subject == limit_scope || subject.starts_with(&format!("{limit_scope}/"))
 }
 
 fn usage_path() -> std::path::PathBuf {
@@ -43,7 +46,7 @@ pub fn check(subject: &str, spend: &HashMap<String, f64>, limits: &[Limit], now:
         if !scope_applies(&limit.scope, subject) || !spend.contains_key(&limit.currency) {
             continue;
         }
-        let used = match c.get(&key(subject, &limit.currency, limit.window)) {
+        let used = match c.get(&key(&limit.scope, &limit.currency, limit.window)) {
             Some(ct) if ct.window_start == limit.window.start(now) => ct.used,
             _ => 0.0,
         };
@@ -70,7 +73,7 @@ pub fn debit(subject: &str, spend: &HashMap<String, f64>, limits: &[Limit], now:
             for limit in limits.iter().filter(|l| scope_applies(&l.scope, subject) && &l.currency == currency) {
                 let ws = limit.window.start(now);
                 let ct = c
-                    .entry(key(subject, currency, limit.window))
+                    .entry(key(&limit.scope, currency, limit.window))
                     .or_insert(Counter { window_start: ws, used: 0.0 });
                 if ct.window_start != ws {
                     ct.window_start = ws;
@@ -114,7 +117,7 @@ pub fn rehydrate(limits: &[Limit]) {
             let ws = limit.window.start(now);
             if ts_ms >= ws {
                 let ct = c
-                    .entry(key(subj, cur, limit.window))
+                    .entry(key(&limit.scope, cur, limit.window))
                     .or_insert(Counter { window_start: ws, used: 0.0 });
                 if ct.window_start != ws {
                     ct.window_start = ws;
@@ -153,5 +156,27 @@ mod tests {
         let limits = vec![limit("calls_test", Window::Hour, 1.0)];
         let spend: HashMap<String, f64> = [("other_cur".to_string(), 5.0)].into();
         assert!(check("org", &spend, &limits, now_ms()).is_none());
+    }
+
+    #[test]
+    fn scope_matching_is_ancestor_based() {
+        assert!(scope_applies("org", "org"));
+        assert!(scope_applies("org", "org/yuko"));
+        assert!(scope_applies("org", "org/team/yuko"));
+        assert!(scope_applies("org/team", "org/team/yuko"));
+        assert!(!scope_applies("org/team", "org/other"));
+        assert!(!scope_applies("org/yuko", "org")); // a worker limit doesn't govern the org
+    }
+
+    #[test]
+    fn org_aggregate_rolls_up_across_subjects() {
+        // One org-wide cap; two different workers draw against the same counter.
+        let limits = vec![limit("rollup_cur", Window::Hour, 2.0)];
+        let spend: HashMap<String, f64> = [("rollup_cur".to_string(), 1.0)].into();
+        let now = now_ms();
+        debit("org/w1", &spend, &limits, now); // org counter = 1
+        debit("org/w2", &spend, &limits, now); // org counter = 2 (crossed)
+        // a third call from any subject under org is now refused
+        assert!(check("org/w3", &spend, &limits, now).is_some());
     }
 }
