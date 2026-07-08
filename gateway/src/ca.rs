@@ -76,6 +76,16 @@ impl Ca {
         let chain = format!("{}{}", leaf.pem(), self.cert_pem);
         Ok((leaf_key.serialize_pem(), chain))
     }
+
+    /// Mint a leaf for `host` as DER for rustls: `(cert_der, key_pkcs8_der)`.
+    /// The box trusts our CA as a root, so presenting the leaf alone suffices.
+    pub fn mint_leaf_der(&self, host: &str) -> Result<(Vec<u8>, Vec<u8>), Box<dyn Error>> {
+        let issuer = self.issuer()?;
+        let leaf_key = KeyPair::generate()?;
+        let params = CertificateParams::new(vec![host.to_string()])?;
+        let leaf = params.signed_by(&leaf_key, &issuer)?;
+        Ok((leaf.der().as_ref().to_vec(), leaf_key.serialize_der()))
+    }
 }
 
 #[cfg(test)]
