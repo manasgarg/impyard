@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { GATEWAY_PORT } from "./lockdown.ts";
 import { certPemForHost, contextForHost, ensureCA, leafKeyPem } from "./ca.ts";
 import { judge } from "./judge.ts";
+import { getCredential, type Credential } from "./vault.ts";
 import type { GovernedRequest, Policy } from "./schema.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -69,10 +70,20 @@ function liftMcp(headers: Record<string, string>, body: Buffer): GovernedRequest
   }
 }
 
-function record(req: GovernedRequest, verdict: string, rule: string | null): void {
-  const decision = { decision_id: randomUUID(), ts: new Date().toISOString(), verdict, rule, request: { ...req, headers: redact(req.headers) } };
+function record(req: GovernedRequest, verdict: string, rule: string | null, injected?: string[]): void {
+  const decision = { decision_id: randomUUID(), ts: new Date().toISOString(), verdict, rule, request: { ...req, headers: redact(req.headers) }, ...(injected ? { injected } : {}) };
   appendFileSync(DECISIONS_PATH, JSON.stringify(decision) + "\n");
-  console.log(`${verdict} ${req.method} ${req.host}${req.path} ${rule ?? "(no rule)"}${req.mcp ? ` mcp:${req.mcp.method}${req.mcp.tool ? `/${req.mcp.tool}` : ""}` : ""}`);
+  console.log(`${verdict} ${req.method} ${req.host}${req.path} ${rule ?? "(no rule)"}${injected ? ` +inject:${injected.join(",")}` : ""}${req.mcp ? ` mcp:${req.mcp.method}${req.mcp.tool ? `/${req.mcp.tool}` : ""}` : ""}`);
+}
+
+/** Turn a vault credential into the auth headers to inject. OAuth today. */
+function renderInjection(cred: Credential): Record<string, string> {
+  const h: Record<string, string> = {};
+  if (cred.type === "oauth" && cred.access) {
+    h["authorization"] = `Bearer ${cred.access}`;
+    if (cred.accountId) h["chatgpt-account-id"] = cred.accountId;
+  }
+  return h;
 }
 
 function collectBody(req: IncomingMessage, done: (body: Buffer, tooBig: boolean) => void): void {
@@ -123,25 +134,48 @@ function handleDecrypted(protocol: "http" | "https", req: IncomingMessage, res: 
       res.end(JSON.stringify({ error: "payload too large" }));
       return;
     }
-    const { verdict, rule } = judge(gr, loadPolicy());
-    record(gr, verdict, rule);
+    const policy = loadPolicy();
+    const { verdict, rule } = judge(gr, policy);
+
+    // Injection: if the deciding rule injects a credential, render it now so
+    // we can fail closed (deny) when the vault lacks it — never forward the
+    // box's sentinel to the real host.
+    let inject: Record<string, string> | null = null;
+    let injectedNames: string[] | undefined;
+    if (verdict === "allow" && rule) {
+      const ruleObj = policy.rules.find((r) => r.name === rule);
+      if (ruleObj?.inject) {
+        const cred = getCredential(ruleObj.inject.credential);
+        if (cred === null) {
+          record(gr, "deny", rule);
+          res.writeHead(403, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: `credential "${ruleObj.inject.credential}" not in vault`, rule }));
+          return;
+        }
+        inject = renderInjection(cred);
+        injectedNames = Object.keys(inject);
+      }
+    }
+
+    record(gr, verdict, rule, injectedNames);
     if (verdict !== "allow") {
       res.writeHead(403, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: `denied by gateway (${verdict})`, rule }));
       return;
     }
-    forward(protocol, host, port, req.method ?? "GET", path + (query ? `?${query}` : ""), headers, body, res);
+    forward(protocol, host, port, req.method ?? "GET", path + (query ? `?${query}` : ""), headers, body, res, inject);
   });
 }
 
 function forward(
   protocol: "http" | "https", host: string, port: number, method: string, target: string,
-  headers: Record<string, string>, body: Buffer, res: ServerResponse,
+  headers: Record<string, string>, body: Buffer, res: ServerResponse, inject: Record<string, string> | null,
 ): void {
   const outHeaders = { ...headers };
   delete outHeaders["proxy-connection"];
   delete outHeaders["content-length"]; // set from the buffered body
   delete outHeaders["transfer-encoding"];
+  if (inject) Object.assign(outHeaders, inject); // swap the sentinel for the real credential
   const requester = protocol === "https" ? httpsRequest : httpRequest;
   const upstream = requester({ host, port, method, path: target, headers: outHeaders, servername: host }, (up) => {
     res.writeHead(up.statusCode ?? 502, up.headers);

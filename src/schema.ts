@@ -49,6 +49,9 @@ export interface Rule {
   name: string;
   match: Match;
   verdict: Verdict;
+  /** On allow, inject this vault credential's auth headers in transit, so
+   * the box can carry a sentinel and never the real key. */
+  inject?: { credential: string };
 }
 
 export interface Policy {
@@ -63,4 +66,6 @@ export interface Decision {
   /** The rule that decided, or null when nothing matched (default deny). */
   rule: string | null;
   request: GovernedRequest;
+  /** Header names the gateway injected in transit (values never recorded). */
+  injected?: string[];
 }
