@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { refreshOAuth } from "./providers.ts";
 
-const VAULT_DIR = join(homedir(), ".roster", "vault");
+const VAULT_DIR = process.env.ROSTER_VAULT_DIR ?? join(homedir(), ".roster", "vault");
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CRED_LOG = join(repoRoot, "runs", "credentials.jsonl");
 /** Refresh this long before the real expiry, so a token can't lapse mid-flight. */
