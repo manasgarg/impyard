@@ -1,0 +1,9 @@
+{
+  "rules": [
+    {
+      "name": "model-api",
+      "match": { "host": ["chatgpt.com", "api.anthropic.com"], "port": 443 },
+      "verdict": "allow"
+    }
+  ]
+}
