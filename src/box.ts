@@ -16,6 +16,12 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureLockdown, GATEWAY_PORT, LOCKDOWN_NETWORK } from "./lockdown.ts";
+import { ensureCA } from "./ca.ts";
+
+// Where the CA's public cert is mounted inside the box (read-only) and the
+// env vars that make every client trust it — so the gateway can terminate
+// TLS and see full requests. The CA private key never enters the box.
+const BOX_CA_PATH = "/opt/roster/ca.crt";
 
 export interface BoxResult {
   runId: string;
@@ -62,6 +68,7 @@ function preparePihome(pihome: string): { hasAuthFile: boolean } {
 
 export async function runBox(prompt: string, ceilingMinutes: number = 30): Promise<BoxResult> {
   await ensureLockdown(); // throws — never proceeds with open egress
+  const caCert = ensureCA(); // host-side CA cert path; the box trusts it, never sees the key
 
   const runId = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-");
   const runDir = join(repoRoot, "runs", runId);
@@ -91,12 +98,18 @@ export async function runBox(prompt: string, ceilingMinutes: number = 30): Promi
     "-v", `${workspace}:${workspace}`,
     "-v", `${sessionDir}:${sessionDir}`,
     "-v", `${pihome}:${pihome}`,
+    // the CA public cert (read-only) so the box trusts the gateway's minted certs
+    "-v", `${caCert}:${BOX_CA_PATH}:ro`,
     "-e", `HOME=${pihome}`,
     "-e", `PI_CODING_AGENT_DIR=${join(pihome, "agent")}`,
     // every egress client honors these; the gateway is the only door
     ...["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"].flatMap((k) => ["-e", `${k}=${proxyUrl}`]),
     "-e", "NODE_USE_ENV_PROXY=1",
     "-e", "NO_PROXY=",
+    // trust our CA so terminated TLS verifies (node fetch, curl, python requests)
+    "-e", `NODE_EXTRA_CA_CERTS=${BOX_CA_PATH}`,
+    "-e", `CURL_CA_BUNDLE=${BOX_CA_PATH}`,
+    "-e", `REQUESTS_CA_BUNDLE=${BOX_CA_PATH}`,
     ...(!hasAuthFile ? ["-e", `ANTHROPIC_API_KEY=${process.env.ANTHROPIC_API_KEY}`] : []),
     "-w", workspace,
     "roster-box",
