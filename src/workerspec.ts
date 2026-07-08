@@ -26,16 +26,6 @@ export function create(name: string): string {
     path,
     `# Worker spec — OWNER-ONLY. Overlays org.toml at scope "org/${name}".
 name = "${name}"
-
-[engine]
-image = "roster-box"
-ceiling_minutes = 30
-
-# This worker's own caps (scope "org/${name}"). Grants inherited from org.toml.
-[[budget.limit]]
-currency = "model_calls"
-window = "day"
-max = 5000
 `,
   );
   return path;

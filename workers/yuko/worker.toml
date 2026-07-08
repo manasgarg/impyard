@@ -1,10 +1,6 @@
 # Worker spec — OWNER-ONLY. Overlays org.toml at scope "org/yuko".
 name = "yuko"
 
-[engine]
-image = "roster-box"
-ceiling_minutes = 30
-
 # This worker's own cap (scope "org/yuko"). Grants are inherited from org.toml.
 [[budget.limit]]
 currency = "model_calls"
