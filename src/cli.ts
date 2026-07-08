@@ -20,9 +20,10 @@ function printHelp(): void {
     console.log(`  ${verb.padEnd(8)} ${summary}`);
   }
   console.log("\ndev verbs:");
-  console.log('  box      run one pi session in the locked-down container:');
-  console.log('           node src/cli.ts box [--ceiling <minutes>] "<prompt>"');
-  console.log("           (needs the gateway running: node src/gateway.ts)");
+  console.log('  box         run one pi session in the locked-down container:');
+  console.log('              node src/cli.ts box [--ceiling <minutes>] "<prompt>"');
+  console.log("              (needs the gateway running: node src/gateway.ts)");
+  console.log("  vault-sync  load host pi credentials into the gateway's vault");
 }
 
 const verb = process.argv[2];
@@ -56,6 +57,11 @@ if (verb === undefined || verb === "help" || verb === "--help") {
     console.error(`roster: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
+} else if (verb === "vault-sync") {
+  const { syncFromPiAuth } = await import("./vault.ts");
+  const names = syncFromPiAuth();
+  console.log(`vault synced from pi auth: ${names.join(", ")}`);
+  console.log("(stored at ~/.roster/vault — off the box mount; the gateway injects these in transit)");
 } else if (verb in VERBS) {
   console.error(`roster: "${verb}" is not implemented yet`);
   process.exit(1);
