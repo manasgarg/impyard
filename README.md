@@ -21,9 +21,9 @@ each increment runs live and is tested before the next one starts.
 
 The language boundary is the trust boundary (see D20 in the handoff):
 
-- **The whole trusted host-side is Rust** (`gateway/`) — one `roster` binary
-  with subcommands: `serve` (the gateway — TLS termination, judge, vault,
-  refresh), plus `create` / `deploy` / `box` / `connect` / `vault-sync`.
+- **The whole trusted host-side is Rust** — one `roster` binary (crate at the
+  repo root) with subcommands: `serve` (the gateway — TLS termination, judge,
+  vault, refresh), plus `create` / `deploy` / `box` / `connect` / `vault-sync`.
   `cargo build`, `cargo test`.
 - **TypeScript lives only inside the untrusted box** — pi (the engine,
   vendored) and its extensions. They reach the Rust side across the container
@@ -35,7 +35,7 @@ The language boundary is the trust boundary (see D20 in the handoff):
 ## Layout
 
 ```
-gateway/          the trusted host-side control plane (Rust): the `roster` binary
+Cargo.toml src/   the trusted host-side control plane (Rust): the `roster` binary
 box/              Dockerfile for the locked-down container image (roster-box)
 providers.json    provider registry (login/refresh/inject), read by CLI + gateway
 org.toml          OWNER-ONLY: shared grants + fleet-aggregate caps + metering
@@ -44,11 +44,16 @@ docs/             design docs, the implementation handoff, per-increment specs
 runs/             per-run outputs, logs, and runs/compiled/ (all gitignored)
 ```
 
+The Rust modules under `src/`: the serve path (`proxy`, `tls`, `ca`, `judge`),
+credentials (`vault`, `providers`, `registry`), budgets (`budget`, `ledger`,
+`scope`), the schema, and the subcommands in `src/cmd/`.
+
 ## Run
 
-Build the binary once (`cargo build --manifest-path gateway/Cargo.toml`;
-`roster` = `gateway/target/debug/roster`), and `npm install` to provide pi to
-the box. Config is authored as TOML specs and compiled by `deploy`:
+Build the binary once (`cargo build`; `roster` = `target/debug/roster`), and
+`npm install` to provide pi to the box. Run from the repo root (config and
+`node_modules` resolve relative to it). Config is authored as TOML specs and
+compiled by `deploy`:
 
 ```
 docker build -t roster-box box/          # once
@@ -82,6 +87,6 @@ model key is never inside the container; a rule with `"inject"`
 swaps the box's sentinel for the real token on the way to the model host,
 and a missing credential fails closed (deny). The gateway also **refreshes**
 expired OAuth tokens itself (owning the provider constants in
-`gateway/src/providers.rs` — no dependency on the engine's code), so
+`src/providers.rs` — no dependency on the engine's code), so
 injected credentials stay live; every refresh is logged to
 `runs/credentials.jsonl`. See docs/injection-spec.md.
