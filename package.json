@@ -10,6 +10,8 @@
     "test": "cargo test"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.80.3"
+    "@earendil-works/pi-coding-agent": "0.80.3",
+    "defuddle": "0.19.1",
+    "linkedom": "0.18.12"
   }
 }

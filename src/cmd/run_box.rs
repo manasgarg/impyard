@@ -126,6 +126,12 @@ async fn run_box(prompt: &str, ceiling_min: f64, worker: &str) -> Result<(String
     }
     args.extend(["-w".into(), workspace.display().to_string(), "roster-box".into()]);
     args.extend(["node".into(), resolve_pi_entry(&repo)?, "--mode".into(), "json".into(), "--no-extensions".into()]);
+    // Load only Roster's own vendored extensions (repo mounted read-only at the same
+    // path); `--no-extensions` still suppresses host-configured discovery. Their egress
+    // is governed like any other — Node's fetch routes through the gateway.
+    for ext in box_extensions(&repo) {
+        args.extend(["-e".into(), ext]);
+    }
     args.extend(["--session-dir".into(), session.display().to_string(), prompt.into()]);
 
     let mut child = tokio::process::Command::new("docker")
@@ -274,6 +280,22 @@ fn resolve_pi_entry(repo: &Path) -> Result<String, BErr> {
         b => b["pi"].as_str().ok_or("pi package has no bin")?.to_string(),
     };
     Ok(pkg_dir.join(bin).display().to_string())
+}
+
+/// Roster's vendored box extensions: every `.ts` under box/extensions/, sorted.
+/// Dropping a new file there is enough to ship a new capability into the box.
+fn box_extensions(repo: &Path) -> Vec<String> {
+    let dir = repo.join("box/extensions");
+    let mut paths: Vec<String> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("ts"))
+        .map(|p| p.display().to_string())
+        .collect();
+    paths.sort();
+    paths
 }
 
 fn home_dir() -> PathBuf {

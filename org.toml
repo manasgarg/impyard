@@ -10,8 +10,25 @@ match = { host = ["chatgpt.com", "api.anthropic.com"], port = 443 }
 verdict = "allow"
 inject = { credential = "openai-codex" }
 
+# Keyless web search: DuckDuckGo's no-JS HTML endpoint, GET-only. Metered as
+# `searches`. Listed before web-fetch so search calls attribute here.
+[[grant]]
+name = "web-search"
+match = { host = "html.duckduckgo.com", port = 443, method = ["GET"] }
+verdict = "allow"
+
+# Web read: fetch any page the model chooses to open (a web-search result, or a
+# URL it already has). Deliberately broad but constrained — GET-only (reads, never
+# writes), https-only, metered and capped below. Tighten `host` to an allowlist, or
+# move this grant into one worker's spec, to narrow it. (Future hardening: block
+# private/link-local ranges at the gateway so a fetch can't reach the host's own LAN.)
+[[grant]]
+name = "web-fetch"
+match = { host = "*", port = 443, method = ["GET"] }
+verdict = "allow"
+
 [budget]
-currencies = ["model_calls", "searches", "usd"]
+currencies = ["model_calls", "searches", "fetches", "usd"]
 vars = { price = { search = 0.005 } }
 
 # How calls map to currency spend (shared).
@@ -23,8 +40,17 @@ spend = { model_calls = "1" }
 match = "decision.rule == 'web-search'"
 spend = { searches = "1", usd = "vars.price.search" }
 
-# Fleet-aggregate cap (scope "org" — all workers roll up into it).
+[[budget.meter]]
+match = "decision.rule == 'web-fetch'"
+spend = { fetches = "1" }
+
+# Fleet-aggregate caps (scope "org" — all workers roll up into these).
 [[budget.limit]]
 currency = "searches"
 window = "day"
 max = 1000
+
+[[budget.limit]]
+currency = "fetches"
+window = "day"
+max = 5000
