@@ -290,7 +290,7 @@ async fn outer(req: Request<Incoming>, tls: TlsAcceptor, client: UpstreamClient)
             };
             let io = TokioIo::new(tls_stream);
             let svc = service_fn(move |r| handle(r, "https", host.clone(), subject.clone(), client.clone()));
-            let _ = server_http1::Builder::new().serve_connection(io, svc).await;
+            let _ = server_http1::Builder::new().serve_connection(io, svc).with_upgrades().await;
         });
         Ok(Response::new(empty()))
     } else if req.uri().path() == "/healthz" {
@@ -308,51 +308,29 @@ async fn outer(req: Request<Incoming>, tls: TlsAcceptor, client: UpstreamClient)
     }
 }
 
-/// A decrypted (or plain-http) request: buffer body, judge, record, then deny
-/// or forward. Response streams back.
-async fn handle(req: Request<Incoming>, protocol: &str, host: String, subject: String, client: UpstreamClient) -> Result<Response<Body>, BErr> {
-    let (parts, incoming) = req.into_parts();
-    let path = parts.uri.path().to_string();
-    let query = parts.uri.query().unwrap_or("").to_string();
-    let method = parts.method.as_str().to_string();
-    let headers = lower_headers(&parts.headers);
-    let port: u16 = if protocol == "https" { 443 } else { 80 };
-    let had_scheme = parts.uri.scheme().is_some();
+/// The governance decision for a request: the injected headers to apply, or a
+/// ready deny response. Judge + inject + budget + record + debit live here once,
+/// shared by the HTTP and WebSocket forward paths.
+enum Gate {
+    Deny(Response<Body>),
+    Allow(Vec<(String, String)>),
+}
 
-    let body_bytes = incoming.collect().await.map(|c| c.to_bytes()).unwrap_or_default();
-    let mcp = lift_mcp(&headers, &body_bytes);
-    let gr = GovernedRequest {
-        worker: Some(subject.clone()),
-        protocol: protocol.into(),
-        method: method.clone(),
-        host: host.clone(),
-        port,
-        path: path.clone(),
-        query: query.clone(),
-        headers,
-        body_size: body_bytes.len() as u64,
-        mcp,
-    };
-
+async fn gate(gr: &GovernedRequest, subject: &str) -> Gate {
     let policy = load_policy();
-    let (verdict, rule) = judge(&gr, &policy);
+    let (verdict, rule) = judge(gr, &policy);
 
-    // Injection: if the deciding rule injects a credential, resolve it now
-    // (refreshing if expired) so we fail closed — deny rather than forward the
-    // box's sentinel — when the vault lacks it or a refresh fails.
+    // Injection: resolve the rule's credential now (refresh if expired) so we
+    // fail closed — deny rather than forward the sentinel — when it's missing.
     let mut inject: Vec<(String, String)> = Vec::new();
     let mut injected_names: Option<Vec<String>> = None;
     if verdict == Verdict::Allow {
         if let Some(rule_name) = &rule {
             if let Some(inj) = policy.rule(rule_name).and_then(|r| r.inject.as_ref()) {
                 match vault::get_fresh_credential(&inj.credential).await {
-                    Err(_) => {
-                        record(&gr, Verdict::Deny, rule.as_deref(), None, &HashMap::new(), None);
-                        return Ok(deny_response(Verdict::Deny, rule.as_deref()));
-                    }
-                    Ok(None) => {
-                        record(&gr, Verdict::Deny, rule.as_deref(), None, &HashMap::new(), None);
-                        return Ok(deny_response(Verdict::Deny, rule.as_deref()));
+                    Err(_) | Ok(None) => {
+                        record(gr, Verdict::Deny, rule.as_deref(), None, &HashMap::new(), None);
+                        return Gate::Deny(deny_response(Verdict::Deny, rule.as_deref()));
                     }
                     Ok(Some(cred)) => {
                         inject = vault::render_injection(&cred, &inj.credential);
@@ -363,35 +341,88 @@ async fn handle(req: Request<Incoming>, protocol: &str, host: String, subject: S
         }
     }
 
-    // Meter the spend this call draws, then enforce the budget against the
-    // call's subject (B4: attributed identity; limits roll up its ancestors).
+    // Meter + enforce the budget against the call's subject (ancestor rollup).
     let budget = crate::budget::load_budget();
     let now = crate::util::now_ms();
     let spend = if verdict == Verdict::Allow {
-        crate::budget::compute_spend(&gr, verdict.as_str(), rule.as_deref(), &json!({}), &budget)
+        crate::budget::compute_spend(gr, verdict.as_str(), rule.as_deref(), &json!({}), &budget)
     } else {
         HashMap::new()
     };
-
-    // Over a limit ⇒ deny before forwarding (the hard stop). Count currencies
-    // are known now; token currencies debit post-response in B3.
     if verdict == Verdict::Allow {
-        if let Some(reason) = crate::ledger::check(&subject, &spend, &budget.limits, now) {
-            record(&gr, Verdict::Deny, rule.as_deref(), None, &HashMap::new(), Some(&reason));
+        if let Some(reason) = crate::ledger::check(subject, &spend, &budget.limits, now) {
+            record(gr, Verdict::Deny, rule.as_deref(), None, &HashMap::new(), Some(&reason));
             let mut resp = Response::new(full(&format!("{{\"error\":\"budget exceeded\",\"detail\":\"{reason}\"}}")));
             *resp.status_mut() = StatusCode::PAYMENT_REQUIRED;
-            return Ok(resp);
+            return Gate::Deny(resp);
         }
     }
 
-    record(&gr, verdict, rule.as_deref(), injected_names.as_deref(), &spend, None);
+    record(gr, verdict, rule.as_deref(), injected_names.as_deref(), &spend, None);
     if verdict != Verdict::Allow {
-        return Ok(deny_response(verdict, rule.as_deref()));
+        return Gate::Deny(deny_response(verdict, rule.as_deref()));
     }
-    crate::ledger::debit(&subject, &spend, &budget.limits, now);
+    crate::ledger::debit(subject, &spend, &budget.limits, now);
+    Gate::Allow(inject)
+}
+
+/// A decrypted (or plain-http) request: judge, then forward. WebSocket upgrades
+/// are tunneled (see forward_websocket); everything else is a buffered forward
+/// with the response streamed back.
+async fn handle(req: Request<Incoming>, protocol: &str, host: String, subject: String, client: UpstreamClient) -> Result<Response<Body>, BErr> {
+    let headers = lower_headers(req.headers());
+    let is_ws = headers.get("upgrade").map(|u| u.eq_ignore_ascii_case("websocket")).unwrap_or(false);
+    let method = req.method().as_str().to_string();
+    let path = req.uri().path().to_string();
+    let query = req.uri().query().unwrap_or("").to_string();
+    let port: u16 = if protocol == "https" { 443 } else { 80 };
+
+    if is_ws {
+        // A WebSocket handshake carries no body; judge on headers, then tunnel.
+        let gr = GovernedRequest {
+            worker: Some(subject.clone()),
+            protocol: protocol.into(),
+            method,
+            host: host.clone(),
+            port,
+            path,
+            query,
+            headers,
+            body_size: 0,
+            mcp: None,
+        };
+        return match gate(&gr, &subject).await {
+            Gate::Deny(resp) => Ok(resp),
+            Gate::Allow(inject) => forward_websocket(req, host, port, inject).await,
+        };
+    }
+
+    let had_scheme = req.uri().scheme().is_some();
+    let (parts, incoming) = req.into_parts();
+    let body_bytes = incoming.collect().await.map(|c| c.to_bytes()).unwrap_or_default();
+    let mcp = lift_mcp(&headers, &body_bytes);
+    let gr = GovernedRequest {
+        worker: Some(subject.clone()),
+        protocol: protocol.into(),
+        method: parts.method.as_str().to_string(),
+        host: host.clone(),
+        port,
+        path: parts.uri.path().to_string(),
+        query: parts.uri.query().unwrap_or("").to_string(),
+        headers,
+        body_size: body_bytes.len() as u64,
+        mcp,
+    };
+
+    let inject = match gate(&gr, &subject).await {
+        Gate::Deny(resp) => return Ok(resp),
+        Gate::Allow(inject) => inject,
+    };
 
     // Forward with the buffered body, swapping the sentinel for the real
     // credential (injected headers overwrite the box's).
+    let path = &gr.path;
+    let query = &gr.query;
     let target: hyper::Uri = if had_scheme {
         parts.uri.clone()
     } else if query.is_empty() {
@@ -422,4 +453,75 @@ async fn handle(req: Request<Incoming>, protocol: &str, host: String, subject: S
             Ok(resp)
         }
     }
+}
+
+/// Proxy a WebSocket upgrade: send the (injected) handshake to the real host,
+/// and on 101 tunnel the frames bidirectionally. TLS is already terminated, so
+/// injection applies to the handshake just like an HTTP request.
+async fn forward_websocket(mut req: Request<Incoming>, host: String, port: u16, inject: Vec<(String, String)>) -> Result<Response<Body>, BErr> {
+    let box_upgrade = hyper::upgrade::on(&mut req); // resolves after we return 101
+    let (parts, _body) = req.into_parts();
+
+    // Open our own verified TLS connection to the real host and speak HTTP/1.
+    let tcp = tokio::net::TcpStream::connect((host.as_str(), port)).await?;
+    let server_name = rustls::pki_types::ServerName::try_from(host.clone())?;
+    let tls = upstream_connector().connect(server_name, tcp).await?;
+    let (mut sender, conn) = hyper::client::conn::http1::handshake::<_, Body>(TokioIo::new(tls)).await?;
+    tokio::spawn(async move {
+        let _ = conn.with_upgrades().await;
+    });
+
+    // Replay the handshake (origin-form), injecting the credential.
+    let pq = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/").to_string();
+    let inject_keys: std::collections::HashSet<&str> = inject.iter().map(|(k, _)| k.as_str()).collect();
+    let mut builder = Request::builder().method(parts.method.clone()).uri(pq);
+    for (k, v) in parts.headers.iter() {
+        if k == hyper::header::PROXY_AUTHORIZATION || inject_keys.contains(k.as_str()) {
+            continue;
+        }
+        builder = builder.header(k, v);
+    }
+    for (k, v) in &inject {
+        builder = builder.header(k, v);
+    }
+    let out = builder.body(Empty::<Bytes>::new().map_err(|never| match never {}).boxed())?;
+
+    let resp = sender.send_request(out).await?;
+    if resp.status() != StatusCode::SWITCHING_PROTOCOLS {
+        // Upstream declined the upgrade — pass its response back as-is.
+        let (rp, body) = resp.into_parts();
+        return Ok(Response::from_parts(rp, body.map_err(|e| Box::new(e) as BErr).boxed()));
+    }
+
+    // Both sides upgraded: tunnel the raw frames.
+    let resp_headers = resp.headers().clone();
+    let upstream_upgrade = hyper::upgrade::on(resp);
+    tokio::spawn(async move {
+        if let (Ok(a), Ok(b)) = (box_upgrade.await, upstream_upgrade.await) {
+            let mut a = TokioIo::new(a);
+            let mut b = TokioIo::new(b);
+            let _ = tokio::io::copy_bidirectional(&mut a, &mut b).await;
+        }
+    });
+
+    let mut response = Response::new(empty());
+    *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
+    *response.headers_mut() = resp_headers;
+    Ok(response)
+}
+
+/// A TLS client that verifies real hosts with the system roots (for the WS
+/// upstream connection, where we need the raw upgraded stream).
+fn upstream_connector() -> tokio_rustls::TlsConnector {
+    static CONNECTOR: std::sync::OnceLock<tokio_rustls::TlsConnector> = std::sync::OnceLock::new();
+    CONNECTOR
+        .get_or_init(|| {
+            let mut roots = rustls::RootCertStore::empty();
+            for cert in rustls_native_certs::load_native_certs().certs {
+                let _ = roots.add(cert);
+            }
+            let config = rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
+            tokio_rustls::TlsConnector::from(Arc::new(config))
+        })
+        .clone()
 }
