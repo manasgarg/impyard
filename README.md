@@ -33,7 +33,8 @@ The language boundary is the trust boundary (see D20 in the handoff):
 - **The whole trusted host-side is Rust** — one `roster` binary (crate at the
   repo root) with subcommands: `serve` (the gateway — TLS termination, judge,
   vault, refresh, and the action host), `supervise` (the orchestration loop),
-  `queue` / `gates` / `relay` (task queue, approval desk, inbound edge),
+  `queue` / `runs` / `gates` / `relay` (task queue, execution history,
+  approval desk, inbound edge),
   `listen` / `channel` / `notes` (Discord and memory control), plus
   `create` / `deploy` / `box` / `connect` / `vault-sync`. `cargo build`, `cargo test`.
 - **TypeScript lives only inside the untrusted box** — pi (the engine,
@@ -74,6 +75,9 @@ roster create yuko                        # scaffold workers/yuko/worker.toml
 roster deploy                             # compile specs → runs/compiled/{policy,budget,actions,triggers,memory}.json
 roster serve &                            # the box's only door out (gateway)
 roster box --worker yuko "write pong to answer.txt"
+roster queue ls                           # durable tasks, newest activity first
+roster runs ls                            # all executions, including Discord sessions
+roster runs show <run-id>                 # metadata, conversation, journal, memory, files
 ```
 
 The gateway terminates TLS (with a host-minted CA at `~/.roster/ca/`, whose

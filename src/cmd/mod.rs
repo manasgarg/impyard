@@ -13,6 +13,7 @@ pub mod notes;
 pub mod queue;
 pub mod relay;
 pub mod run_box;
+pub mod runs;
 pub mod session;
 pub mod supervise;
 pub mod vault_sync;

@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
+use std::collections::HashMap;
 
 fn path(worker: &str) -> PathBuf {
     root().join("journal").join(worker).join("events.jsonl")
@@ -49,4 +50,33 @@ pub fn tail(worker: &str, n: usize) -> Vec<Value> {
     } else {
         evs
     }
+}
+
+/// Recover run → worker attribution from the append-only journals. This lets
+/// `roster runs` describe executions created before run manifests existed.
+pub fn run_workers() -> HashMap<String, String> {
+    fn files(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                files(&path, out);
+            } else if path.file_name().and_then(|n| n.to_str()) == Some("events.jsonl") {
+                out.push(path);
+            }
+        }
+    }
+    let mut paths = Vec::new();
+    files(&root().join("journal"), &mut paths);
+    let mut out = HashMap::new();
+    for path in paths {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        for event in text.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok()) {
+            let run_id = event.get("run_id").and_then(Value::as_str).unwrap_or("");
+            let worker = event.get("worker").and_then(Value::as_str).unwrap_or("");
+            if !run_id.is_empty() && !worker.is_empty() {
+                out.insert(run_id.to_string(), worker.strip_prefix("org/").unwrap_or(worker).to_string());
+            }
+        }
+    }
+    out
 }

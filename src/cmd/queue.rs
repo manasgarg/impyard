@@ -139,15 +139,33 @@ fn add(args: &[String]) -> Result<(), BErr> {
 }
 
 fn ls() -> Result<(), BErr> {
-    let tasks = queue::list_all();
+    let mut tasks = queue::list_all();
     if tasks.is_empty() {
         println!("queue is empty");
         return Ok(());
     }
-    println!("{:<12}  {:<10}  {:<12}  {:<12}  {}", "TASK", "WORKER", "STATE", "ORIGIN", "PROMPT");
+    println!(
+        "{:<12}  {:<10}  {:<12}  {:<17}  {:<29}  {:<12}  PROMPT",
+        "TASK", "WORKER", "STATE", "UPDATED (UTC)", "RUN", "ORIGIN"
+    );
+    tasks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then_with(|| b.created_at.cmp(&a.created_at)));
     for t in tasks {
-        let prompt = if t.prompt.len() > 48 { format!("{}…", &t.prompt[..48]) } else { t.prompt.clone() };
-        println!("{:<12}  {:<10}  {:<12}  {:<12}  {}", t.id, t.worker, t.state, t.origin, prompt);
+        let prompt = crate::runlog::one_line(&t.prompt, 48);
+        let updated = if t.updated_at.len() >= 16 {
+            format!("{} {}", &t.updated_at[..10], &t.updated_at[11..16])
+        } else {
+            t.updated_at.clone()
+        };
+        println!(
+            "{:<12}  {:<10}  {:<12}  {:<17}  {:<29}  {:<12}  {}",
+            t.id,
+            t.worker,
+            t.state,
+            updated,
+            t.run_id.as_deref().unwrap_or("-"),
+            t.origin,
+            prompt
+        );
     }
     Ok(())
 }

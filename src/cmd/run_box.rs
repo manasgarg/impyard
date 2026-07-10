@@ -116,16 +116,24 @@ pub fn new_run_id() -> String {
 }
 
 async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str, run_id: &str, code: Option<&CodeSpec>) -> Result<(String, PathBuf, &'static str, Option<i32>), BErr> {
+    let kind = if code.is_some() { "code" } else if task_id.is_empty() { "box" } else { "task" };
     let Provisioned { mut args, identity_file, container, session_dir, run_dir, repo } =
-        provision_box(worker, run_id, task_id, code).await?;
+        provision_box(worker, run_id, task_id, code, kind).await?;
     args.extend(pi_prefix(&repo, "json", &session_dir)?);
     args.push(with_identity(worker, prompt));
 
-    let mut child = tokio::process::Command::new("docker")
+    let mut child = match tokio::process::Command::new("docker")
         .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
-        .spawn()?;
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            crate::runlog::fail(run_id);
+            return Err(e.into());
+        }
+    };
 
     // Stream the box's stdout to stdout.jsonl.
     let mut out = child.stdout.take().unwrap();
@@ -151,6 +159,7 @@ async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str, ru
     };
     let _ = stream.await;
     let _ = std::fs::remove_file(&identity_file); // single-use token
+    let _ = crate::runlog::finish(run_id, ended_by, status.code());
 
     Ok((run_id.to_string(), run_dir, ended_by, status.code()))
 }
@@ -173,17 +182,24 @@ pub async fn run_session(
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
     let Provisioned { mut args, identity_file, container, session_dir, run_dir, repo } =
-        provision_box(worker, run_id, "", None).await?;
+        provision_box(worker, run_id, "", None, "session").await?;
     args.insert(1, "-i".into()); // keep stdin open for the rpc protocol
     args.extend(pi_prefix(&repo, "rpc", &session_dir)?);
     args.extend(["--append-system-prompt".into(), system_prompt.to_string()]);
 
-    let mut child = tokio::process::Command::new("docker")
+    let mut child = match tokio::process::Command::new("docker")
         .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
-        .spawn()?;
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            crate::runlog::fail(run_id);
+            return Err(e.into());
+        }
+    };
     let mut stdin = child.stdin.take().ok_or("session box: no stdin")?;
     let stdout = child.stdout.take().ok_or("session box: no stdout")?;
     let mut lines = tokio::io::BufReader::new(stdout).lines();
@@ -239,6 +255,7 @@ pub async fn run_session(
     docker_kill(&container).await;
     let _ = child.wait().await;
     let _ = std::fs::remove_file(&identity_file); // single-use token
+    let _ = crate::runlog::finish(run_id, "idle", Some(0));
     eprintln!("session {run_id} [{worker}] ended");
     Ok(())
 }
@@ -271,7 +288,7 @@ struct Provisioned {
     repo: PathBuf,
 }
 
-async fn provision_box(worker: &str, run_id: &str, task_id: &str, code: Option<&CodeSpec>) -> Result<Provisioned, BErr> {
+async fn provision_box(worker: &str, run_id: &str, task_id: &str, code: Option<&CodeSpec>, kind: &str) -> Result<Provisioned, BErr> {
     ensure_lockdown().await?;
 
     let home = home_dir();
@@ -364,6 +381,8 @@ async fn provision_box(worker: &str, run_id: &str, task_id: &str, code: Option<&
     }
     let cwd = worktree.as_ref().unwrap_or(&workspace);
     args.extend(["-w".into(), cwd.display().to_string(), "roster-box".into()]);
+
+    crate::runlog::start(run_id, worker, kind, Some(task_id).filter(|s| !s.is_empty()))?;
 
     Ok(Provisioned { args, identity_file, container, session_dir: session, run_dir, repo })
 }

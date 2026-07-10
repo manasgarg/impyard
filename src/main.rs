@@ -22,6 +22,7 @@ mod providers;
 mod proxy;
 mod queue;
 mod registry;
+mod runlog;
 mod scope;
 mod schema;
 mod smtp;
@@ -55,6 +56,7 @@ async fn main() {
         "relay" => cmd::relay::run(&args[2..]),
         "listen" => cmd::listen::run(&args[2..]).await,
         "notes" => cmd::notes::run(&args[2..]),
+        "runs" => cmd::runs::run(&args[2..]),
         "channel" => cmd::channel::run(&args[2..]),
         "session" => cmd::session::run(&args[2..]).await,
         "help" | "--help" | "-h" => {
@@ -116,6 +118,7 @@ fn print_help() {
            listen --worker <n>          run the Discord gateway (inbound)\n  \
            channel [ls|trust|mode|memory]  manage channel behavior\n  \
            notes [ls|show|rm|correct|pin|explain]  inspect and repair memory\n  \
+           runs [ls|show]              inspect all executions, including sessions\n  \
            gates [ls|show|approve|deny] approval desk for proposed actions\n\
          {providers}\n  \
            vault-sync                  import an existing pi login into the vault"
