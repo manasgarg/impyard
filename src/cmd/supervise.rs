@@ -68,7 +68,8 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
             let t = task.clone();
             let prompt = effective_prompt(&task);
             set.spawn(async move {
-                let out = run_box::dispatch(&t.worker, &prompt, t.ceiling_min, &t.id).await.map_err(|e| e.to_string());
+                let code = t.repo.as_ref().map(|r| run_box::CodeSpec { repo: r.clone(), base: t.base.clone().unwrap_or_else(|| "main".into()) });
+                let out = run_box::dispatch(&t.worker, &prompt, t.ceiling_min, &t.id, code.as_ref()).await.map_err(|e| e.to_string());
                 (t, out)
             });
         }

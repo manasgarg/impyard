@@ -49,6 +49,15 @@ intent = "email-send"
 match = { to = "*@ourco.com" }
 level = "auto"
 
+# Code tasks: the box edits a writable worktree, then proposes the change. On
+# approval the git-pr executor commits, pushes the branch, and opens a PR — git
+# push is direct (the gateway can't govern git's wire protocol); the box never
+# holds the remote credential.
+[[action]]
+name = "code-change"
+executor = "git-pr"
+trust = "gate"
+
 [budget]
 currencies = ["model_calls", "searches", "fetches", "usd"]
 vars = { price = { search = 0.005 } }

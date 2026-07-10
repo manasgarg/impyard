@@ -78,6 +78,31 @@ export default function rosterActionTools(api: PiToolApi): void {
   });
 
   api.registerTool({
+    name: "propose_changes",
+    label: "propose_changes",
+    description:
+      "Propose the code changes you've made in this working copy as a pull request. Make and save all your " +
+      "file edits FIRST, then call this once. It does NOT commit or push directly — it submits the change for " +
+      "the owner's review; on approval the trusted side commits your working tree, pushes the branch, and opens the PR.",
+    promptSnippet: "propose_changes(title, body, message): open a PR from your edits (requires approval)",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "PR title." },
+        body: { type: "string", description: "PR description: what changed and why." },
+        message: { type: "string", description: "Commit message." },
+      },
+      required: ["title", "body", "message"],
+      additionalProperties: false,
+    },
+    async execute(_id, params) {
+      const { title, body, message } = params as { title: string; body: string; message: string };
+      const s = await submit("code-change", { title, body, message }, body);
+      return { content: [{ type: "text", text: describe(s) }] };
+    },
+  });
+
+  api.registerTool({
     name: "check_gates",
     label: "check_gates",
     description:

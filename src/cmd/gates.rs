@@ -53,6 +53,14 @@ fn show(id: &str) -> Result<(), BErr> {
         println!("rationale {}", g.rationale);
     }
     println!("\npayload — the exact action that will run:\n{}", serde_json::to_string_pretty(&g.payload)?);
+    // For a code gate, render the actual diff the box produced (live, from the
+    // run's worktree) so the human reviews the change, not just the metadata.
+    if g.executor == "git-pr" {
+        match action::worktree_diff(&g.run_id) {
+            Some(d) if !d.is_empty() => println!("\ndiff — what would be committed:\n{d}"),
+            _ => println!("\ndiff — (no changes found in the worktree)"),
+        }
+    }
     Ok(())
 }
 

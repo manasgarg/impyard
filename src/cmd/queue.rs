@@ -19,6 +19,8 @@ fn add(args: &[String]) -> Result<(), BErr> {
     let mut worker = String::new();
     let mut ceiling = 30.0;
     let mut proactive = false;
+    let mut repo: Option<String> = None;
+    let mut base = "main".to_string();
     let mut rest: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -29,6 +31,16 @@ fn add(args: &[String]) -> Result<(), BErr> {
             }
             "--ceiling" => {
                 ceiling = args.get(i + 1).and_then(|s| s.parse().ok()).ok_or("--ceiling wants a number of minutes")?;
+                i += 2;
+            }
+            "--repo" => {
+                // Absolute path so the worktree resolves from the supervisor's cwd.
+                let p = args.get(i + 1).cloned().ok_or("--repo wants a git repo path")?;
+                repo = Some(std::fs::canonicalize(&p).map(|c| c.display().to_string()).unwrap_or(p));
+                i += 2;
+            }
+            "--base" => {
+                base = args.get(i + 1).cloned().ok_or("--base wants a ref")?;
                 i += 2;
             }
             "--proactive" => {
@@ -48,9 +60,11 @@ fn add(args: &[String]) -> Result<(), BErr> {
     if prompt.trim().is_empty() {
         return Err("queue add needs a prompt".into());
     }
-    let t = queue::create(&worker, &prompt, "manual", proactive, ceiling, serde_json::Value::Null)
+    let base = repo.as_ref().map(|_| base);
+    let kind = if repo.is_some() { "code" } else if proactive { "proactive" } else { "owner-filed" };
+    let t = queue::create(&worker, &prompt, "manual", proactive, ceiling, serde_json::Value::Null, repo, base)
         .map_err(|e| e.to_string())?;
-    println!("queued {} for {} ({})", t.id, t.worker, if proactive { "proactive" } else { "owner-filed" });
+    println!("queued {} for {} ({kind})", t.id, t.worker);
     Ok(())
 }
 

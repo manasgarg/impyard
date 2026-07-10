@@ -47,7 +47,7 @@ pub async fn run(args: &[String]) -> Result<(), BErr> {
         return Err("box needs a prompt: roster box \"<prompt>\"".into());
     }
 
-    let (run_id, run_dir, ended_by, exit_code) = run_box(&prompt, ceiling_min, &worker, "").await?;
+    let (run_id, run_dir, ended_by, exit_code) = run_box(&prompt, ceiling_min, &worker, "", None).await?;
     println!("box {run_id} ended by {ended_by} (exit code {})", exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".into()));
     println!("outputs: {}", run_dir.display());
     std::process::exit(if ended_by == "ceiling" { 2 } else { exit_code.unwrap_or(1) });
@@ -61,15 +61,22 @@ pub struct Outcome {
     pub exit_code: Option<i32>,
 }
 
+/// A code task's working copy: a fresh git worktree of `repo` at `base`, mounted
+/// writable so the box can edit and the git-pr executor can commit + push.
+pub struct CodeSpec {
+    pub repo: String,
+    pub base: String,
+}
+
 /// Run one box session for a queued task (the supervisor's entry point). Same
 /// machinery as the CLI, but returns the outcome instead of exiting, and passes
 /// the task id into the box so proposed actions carry their provenance.
-pub async fn dispatch(worker: &str, prompt: &str, ceiling_min: f64, task_id: &str) -> Result<Outcome, BErr> {
-    let (run_id, run_dir, ended_by, exit_code) = run_box(prompt, ceiling_min, worker, task_id).await?;
+pub async fn dispatch(worker: &str, prompt: &str, ceiling_min: f64, task_id: &str, code: Option<&CodeSpec>) -> Result<Outcome, BErr> {
+    let (run_id, run_dir, ended_by, exit_code) = run_box(prompt, ceiling_min, worker, task_id, code).await?;
     Ok(Outcome { run_id, run_dir, ended_by, exit_code })
 }
 
-async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str) -> Result<(String, PathBuf, &'static str, Option<i32>), BErr> {
+async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str, code: Option<&CodeSpec>) -> Result<(String, PathBuf, &'static str, Option<i32>), BErr> {
     ensure_lockdown().await?;
 
     let home = home_dir();
@@ -95,6 +102,28 @@ async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str) ->
     let pihome = run_dir.join(".pihome");
     std::fs::create_dir_all(&workspace)?;
     std::fs::create_dir_all(&session)?;
+
+    // Code task: a writable git worktree on a fresh per-run branch. The box edits
+    // in it (no git needed inside the box); the git-pr executor commits + pushes
+    // from the host on approval. The branch names the worker + run for the PR.
+    let worktree: Option<PathBuf> = match code {
+        Some(cs) => {
+            let wt = run_dir.join("worktree");
+            let branch = format!("worker/{worker}/{run_id}");
+            let ok = std::process::Command::new("git")
+                .args(["-C", &cs.repo, "worktree", "add", "-B", &branch])
+                .arg(&wt)
+                .arg(&cs.base)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !ok {
+                return Err(format!("could not create worktree from {} at {}", cs.repo, cs.base).into());
+            }
+            Some(wt)
+        }
+        None => None,
+    };
 
     let has_auth = prepare_pihome(&pihome, &home)?;
     if !has_auth && std::env::var("ANTHROPIC_API_KEY").is_err() {
@@ -127,6 +156,9 @@ async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str) ->
     }
     let mount = |p: &Path| format!("{0}:{0}", p.display());
     args.extend(["-v".into(), mount(&workspace), "-v".into(), mount(&session), "-v".into(), mount(&pihome)]);
+    if let Some(wt) = &worktree {
+        args.extend(["-v".into(), mount(wt)]);
+    }
     args.push("-v".into());
     args.push(format!("{}:{BOX_CA_PATH}:ro", host_ca.display()));
     args.extend(["-e".into(), format!("HOME={}", pihome.display())]);
@@ -147,7 +179,8 @@ async fn run_box(prompt: &str, ceiling_min: f64, worker: &str, task_id: &str) ->
             args.extend(["-e".into(), format!("ANTHROPIC_API_KEY={key}")]);
         }
     }
-    args.extend(["-w".into(), workspace.display().to_string(), "roster-box".into()]);
+    let cwd = worktree.as_ref().unwrap_or(&workspace);
+    args.extend(["-w".into(), cwd.display().to_string(), "roster-box".into()]);
     args.extend(["node".into(), resolve_pi_entry(&repo)?, "--mode".into(), "json".into(), "--no-extensions".into()]);
     // Load only Roster's own vendored extensions (repo mounted read-only at the same
     // path); `--no-extensions` still suppresses host-configured discovery. Their egress

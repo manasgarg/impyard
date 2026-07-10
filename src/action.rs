@@ -125,7 +125,7 @@ async fn submit(worker: &str, body: &[u8]) -> Response<Body> {
 
     let level = trust::evaluate(worker, &env.intent, &env.payload, &grant.trust, &policy.trust);
     if level == "auto" {
-        match run_executor(&grant.executor, worker, &env.intent, &env.payload).await {
+        match run_executor(&grant.executor, worker, &env.intent, &env.payload, &env.run_id).await {
             Ok(result) => {
                 journal::append(worker, "executed", json!({ "intent": env.intent, "auto": true, "result": result }));
                 audit(worker, &env.intent, "auto-executed", None, Some(&result));
@@ -187,7 +187,7 @@ pub async fn execute_gate(id: &str, decided_by: &str, note: Option<&str>) -> Res
     }
     g.state = "executing".into();
     gate::save(&g).map_err(|e| e.to_string())?;
-    match run_executor(&g.executor, &g.worker, &g.intent, &g.payload).await {
+    match run_executor(&g.executor, &g.worker, &g.intent, &g.payload, &g.run_id).await {
         Ok(result) => {
             g.state = "executed".into();
             g.executed_at = Some(now_rfc3339());
@@ -255,7 +255,7 @@ fn resolve_followup(g: &Gate) {
         g.intent, g.id, outcome
     );
     let context = json!({ "resolved_gate": { "id": g.id, "intent": g.intent, "state": g.state, "result": g.result, "decided_by": g.decided_by, "note": g.decision_note } });
-    let _ = crate::queue::create(&short, &prompt, "continuation", false, 15.0, context);
+    let _ = crate::queue::create(&short, &prompt, "continuation", false, 15.0, context, None, None);
     journal::append(&g.worker, "continuation-filed", json!({ "gate_id": g.id, "intent": g.intent }));
 }
 
@@ -264,10 +264,11 @@ fn resolve_followup(g: &Gate) {
 /// Dispatch to the executor that performs an intent. New capabilities register
 /// here. Executors that egress route through the gateway as the privileged
 /// subject (uniform judge/inject/meter/audit); local ones act directly.
-pub async fn run_executor(executor: &str, worker: &str, intent: &str, payload: &Value) -> Result<Value, String> {
+pub async fn run_executor(executor: &str, worker: &str, intent: &str, payload: &Value, run_id: &str) -> Result<Value, String> {
     match executor {
         "message-user" => exec_message_user(worker, payload),
         "email" => exec_email(worker, payload),
+        "git-pr" => exec_git_pr(worker, run_id, payload),
         other => Err(format!("no executor \"{other}\" for intent \"{intent}\"")),
     }
 }
@@ -307,6 +308,74 @@ fn exec_email(worker: &str, payload: &Value) -> Result<Value, String> {
     std::fs::write(&file, format!("{}\n", serde_json::to_string_pretty(&rendered).unwrap_or_default())).map_err(|e| e.to_string())?;
     eprintln!("email [{worker}] → {to:?}: {subject}");
     Ok(json!({ "delivered": "local-sink", "to": to, "file": file.display().to_string() }))
+}
+
+/// Land a code task's worktree as a pushed branch (and a PR where possible). The
+/// box edited files in runs/<run_id>/worktree; here — only after approval — we
+/// commit, push to the repo's origin, and open a PR. git push is direct (the
+/// gateway can't govern git's wire protocol); the box never touches any of it.
+fn exec_git_pr(worker: &str, run_id: &str, payload: &Value) -> Result<Value, String> {
+    if run_id.is_empty() {
+        return Err("code-change has no run_id — cannot find the worktree".into());
+    }
+    let wt = root().join("runs").join(run_id).join("worktree");
+    if !wt.exists() {
+        return Err(format!("no worktree at {}", wt.display()));
+    }
+    let wt = wt.display().to_string();
+    let message = payload.get("message").and_then(|v| v.as_str()).unwrap_or("changes proposed by worker");
+    let title = payload.get("title").and_then(|v| v.as_str()).unwrap_or(message);
+    let body = payload.get("body").and_then(|v| v.as_str()).unwrap_or("");
+
+    git(&["-C", &wt, "add", "-A"])?;
+    // Nothing staged → the proposal was empty; surface that rather than a git error.
+    let clean = std::process::Command::new("git")
+        .args(["-C", &wt, "diff", "--cached", "--quiet"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if clean {
+        return Err("no changes in the worktree to commit".into());
+    }
+    let author = format!("user.name=roster worker {worker}");
+    git(&["-C", &wt, "-c", "user.email=worker@roster.local", "-c", &author, "commit", "-m", message])?;
+    let branch = git(&["-C", &wt, "rev-parse", "--abbrev-ref", "HEAD"])?;
+    let commit = git(&["-C", &wt, "rev-parse", "--short", "HEAD"])?;
+    git(&["-C", &wt, "push", "-u", "origin", &branch])?;
+
+    // Open a PR if the GitHub CLI is available and authenticated; otherwise the
+    // branch is pushed and the PR is opened out of band.
+    let pr = match std::process::Command::new("gh")
+        .args(["pr", "create", "--head", &branch, "--title", title, "--body", body])
+        .current_dir(&wt)
+        .output()
+    {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => "branch pushed; open the PR from it".to_string(),
+    };
+    eprintln!("git-pr [{worker}] pushed {branch} ({commit})");
+    Ok(json!({ "branch": branch, "commit": commit, "pushed": true, "pr": pr }))
+}
+
+fn git(args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("git").args(args).output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// The diff the box produced in a run's worktree (for `gates show` on a code
+/// gate — the human reviews the actual change, rendered live, not stored).
+pub fn worktree_diff(run_id: &str) -> Option<String> {
+    let wt = root().join("runs").join(run_id).join("worktree");
+    if !wt.exists() {
+        return None;
+    }
+    let wt = wt.display().to_string();
+    // Stage nothing; show working-tree changes against HEAD, including new files.
+    let _ = std::process::Command::new("git").args(["-C", &wt, "add", "-A", "-N"]).status();
+    git(&["-C", &wt, "diff", "HEAD"]).ok()
 }
 
 // ── audit ────────────────────────────────────────────────────────────────────

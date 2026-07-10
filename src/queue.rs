@@ -33,6 +33,12 @@ pub struct Task {
     /// Context threaded into the box (e.g. a continuation's gate outcome).
     #[serde(default)]
     pub context: Value,
+    /// Code task: the git repo to branch a writable worktree from, and the base
+    /// ref. Absent → a research task (read-only repo + scratch workspace).
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub base: Option<String>,
 }
 
 fn default_ceiling() -> f64 {
@@ -53,7 +59,8 @@ fn dir(worker: &str) -> PathBuf {
     root().join("queue").join(worker)
 }
 
-pub fn create(worker: &str, prompt: &str, origin: &str, proactive: bool, ceiling_min: f64, context: Value) -> Result<Task, BErr> {
+#[allow(clippy::too_many_arguments)]
+pub fn create(worker: &str, prompt: &str, origin: &str, proactive: bool, ceiling_min: f64, context: Value, repo: Option<String>, base: Option<String>) -> Result<Task, BErr> {
     let now = now_rfc3339();
     let t = Task {
         id: new_id(),
@@ -67,6 +74,8 @@ pub fn create(worker: &str, prompt: &str, origin: &str, proactive: bool, ceiling
         ceiling_min,
         run_id: None,
         context,
+        repo,
+        base,
     };
     save(&t)?;
     Ok(t)
