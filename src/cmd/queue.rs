@@ -1,7 +1,8 @@
-//! `roster queue` — file and list tasks for the supervisor to dispatch.
+//! `roster queue` — file, list, and inspect tasks for the supervisor to dispatch.
 //!
 //!   roster queue add --worker <name> [--ceiling <m>] [--proactive] "<prompt>"
 //!   roster queue ls
+//!   roster queue show <id>
 
 use crate::queue;
 
@@ -11,8 +12,35 @@ pub fn run(args: &[String]) -> Result<(), BErr> {
     match args.first().map(String::as_str).unwrap_or("ls") {
         "add" => add(&args[1..]),
         "ls" | "list" => ls(),
-        other => Err(format!("unknown queue subcommand \"{other}\" (try: add, ls)").into()),
+        "show" => show(args.get(1).ok_or("usage: roster queue show <id>")?),
+        other => Err(format!("unknown queue subcommand \"{other}\" (try: add, ls, show)").into()),
     }
+}
+
+fn show(id: &str) -> Result<(), BErr> {
+    let t = queue::find(id).ok_or_else(|| format!("no such task {id}"))?;
+    println!("task     {}", t.id);
+    println!("worker   {}", t.worker);
+    println!("state    {}", t.state);
+    println!("origin   {}{}", t.origin, if t.proactive { " (proactive)" } else { "" });
+    println!("created  {}", t.created_at);
+    println!("updated  {}", t.updated_at);
+    println!("ceiling  {} min", t.ceiling_min);
+    if let Some(run) = &t.run_id {
+        println!("run      {run}   (transcript: runs/{run}/stdout.jsonl)");
+    }
+    if let Some(repo) = &t.repo {
+        println!("repo     {repo} @ {}", t.base.as_deref().unwrap_or("main"));
+    }
+    let gates = crate::gate::pending_for_task(&t.id);
+    if !gates.is_empty() {
+        println!("gates    {} pending: {}", gates.len(), gates.iter().map(|g| g.id.as_str()).collect::<Vec<_>>().join(", "));
+    }
+    if !t.context.is_null() {
+        println!("context  {}", serde_json::to_string_pretty(&t.context)?);
+    }
+    println!("\nprompt:\n{}", t.prompt);
+    Ok(())
 }
 
 fn add(args: &[String]) -> Result<(), BErr> {
