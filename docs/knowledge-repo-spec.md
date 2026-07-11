@@ -50,12 +50,23 @@ knowledge/<worker>/repo.git     canonical host-side repository
 The canonical branch is `main`. Git metadata, hooks, branch refs, and integration
 credentials remain host-controlled and are never writable from inside a box.
 
-The worker controls the repository's knowledge organization:
+The repository separates durable records from their organization:
+
+```text
+records/                    uniquely named durable notes and syntheses
+proposals/                  uniquely named organization requests from research runs
+organization/               the worker's mutable, browsable view of its knowledge
+```
+
+The names are illustrative, but these three stable write domains are required.
+Files in `records/` and `proposals/` receive host-allocated, collision-free IDs.
+Their platform-managed storage layout and the top-level domains are never
+reorganized during normal operation. The worker controls the prose and metadata
+inside its records and the internal shape of `organization/`, including:
 
 - directory hierarchy;
-- note titles and prose;
 - links, tags, and topic structure;
-- internal syntheses and indexes;
+- indexes and pointers to internal syntheses;
 - decisions about when material should be split or consolidated.
 
 The platform imposes only the constraints required for safe concurrent updates,
@@ -103,7 +114,9 @@ file.
 ## Two write modes
 
 Arbitrary concurrent edits to the same files cannot be made conflict-free. The
-repository therefore has two explicit write modes.
+repository therefore separates the paths written by ordinary research from the
+paths written by reorganization. Only one reorganization job may exist at a
+time, but it does not need to stop ordinary research jobs.
 
 ### Append mode
 
@@ -111,7 +124,7 @@ Append mode is the default for ordinary concurrent work.
 
 A run may:
 
-- create new files and directories;
+- create uniquely named files under `records/` and `proposals/`;
 - freely revise files that it created during the same run;
 - link new notes to existing note IDs;
 - add a correction or superseding note as a new file;
@@ -121,45 +134,62 @@ A run may not:
 
 - modify or delete a file that existed at its base commit;
 - rename existing paths;
-- rewrite shared indexes or canonical summaries;
+- write under `organization/`;
+- rewrite shared indexes or canonical summaries in place;
 - change repository configuration.
 
 The host validates this rule from the Git diff before committing. A violating
 diff is not integrated and remains available for repair.
 
-New note paths must be collision-resistant. The worker chooses the hierarchy and
-human-readable slug; the platform supplies or validates a stable unique suffix:
+New record and proposal paths must be collision-free. The host allocates their
+stable IDs; the worker may include a human-readable slug:
 
 ```text
-topics/agent-memory/prompt-caching--n_01JABC.md
-vendors/example/sso-support--n_01JDEF.md
+records/notes/prompt-caching--n_01JABC.md
+records/notes/sso-support--n_01JDEF.md
+proposals/place--p_01JGHI.yaml
 ```
 
-The exact layout is not prescribed. The unique suffix prevents two runs from
-creating the same path even when they choose the same title.
+The unique ID prevents two runs from creating the same path even when they
+choose the same title. A proposal can suggest where a new note belongs, which
+notes should be consolidated, or which index should mention it. It is input to a
+reorganization job, not a mutation of the shared organizational view.
 
-### Maintenance mode
+### Reorganization mode
 
-Maintenance mode gives one run an exclusive writer lease for the worker's
-knowledge repository.
+Reorganization mode gives one run an exclusive lease over `organization/` for
+the worker's knowledge repository. Before granting the lease, the integrator
+drains commits already queued for that worker so the job starts from the latest
+completed work.
 
-A maintenance run may:
+A reorganization run may:
 
-- modify, rename, or delete existing notes;
-- merge corrections and superseding notes;
-- reorganize directories;
-- update canonical syntheses;
+- modify, rename, or delete paths under `organization/`;
+- consume proposal files that existed at its base commit, without renaming the
+  `proposals/` layout;
+- add new uniquely named records when consolidation produces a new synthesis;
+- have a new record declare that it supersedes an older record, then update the
+  organizational pointer;
+- reorganize the browsable directory hierarchy;
+- update canonical pointers to syntheses;
 - rebuild hand-maintained indexes;
 - perform repository-wide cleanup.
 
-The supervisor grants the lease only after all earlier knowledge commits have
-been integrated and no other note-writing run is active. While the lease is held:
+Routine reorganization does not rewrite or delete durable records. Consolidation
+creates a new record and changes organizational pointers, preserving stable IDs
+and links from runs that started on an older snapshot. Physical deletion is a
+separate owner-only retention or emergency-purge operation.
 
-- new runs may receive a read-only snapshot and continue using scratch;
-- new knowledge-writing runs wait, or run with knowledge writes disabled;
-- the maintenance commit integrates before append-mode writers resume.
+While the lease is held, append-mode research runs continue normally. Their
+commits add unique paths under `records/` and `proposals/`; the reorganization
+job changes paths under `organization/` and may remove only older proposals that
+were already in its snapshot. It cannot name or consume a proposal created
+concurrently. The two write sets therefore do not overlap. When either commit
+rebases across the other, Git has no shared path to conflict on. Newly proposed
+organization work that was not visible to the reorganization job remains in
+`proposals/` for the next pass.
 
-This is repository maintenance, not memory promotion. It changes organization
+This is repository reorganization, not memory promotion. It changes organization
 inside the worker's knowledge repository and does not change identity, purpose,
 permissions, or interaction memory.
 
@@ -181,7 +211,7 @@ sources:
 Everything else is worker-controlled. A worker may add titles, tags, confidence,
 links, or custom fields when useful.
 
-Links should prefer stable note IDs over paths so maintenance runs can reorganize
+Links should prefer stable note IDs over paths so reorganization runs can change
 the directory tree without breaking meaning. A deterministic ID index may be
 rebuilt from frontmatter; it should not become a shared file that every append
 run edits.
@@ -196,7 +226,7 @@ supersedes:
 ---
 ```
 
-A later maintenance run can consolidate the two if appropriate.
+A later reorganization run can consolidate the two if appropriate.
 
 ## Repository content policy
 
@@ -217,7 +247,10 @@ Before committing, the trusted host validates at least:
 - file modes are non-executable unless explicitly permitted by policy;
 - individual file and total repository limits are respected;
 - obvious credentials and secrets are rejected;
-- append-mode diffs contain only allowed additions.
+- append-mode diffs contain only host-allocated additions under `records/` and
+  `proposals/`;
+- reorganization-mode diffs do not rewrite durable records or reserved
+  top-level domains.
 
 Notes are untrusted advisory material. Reading a note may influence model
 behavior, but it never grants capabilities or bypasses the gateway.
@@ -264,7 +297,7 @@ For each queued commit, the integrator:
 4. fast-forwards `main` atomically when clean;
 5. records the final commit in the run and journal.
 
-Concurrent append-mode runs normally touch disjoint unique paths and therefore
+Concurrent append-mode runs touch disjoint host-allocated paths and therefore
 rebase cleanly:
 
 ```text
@@ -277,16 +310,24 @@ rebase C:    A → C becomes B → C'
 integrate:   main B → C'
 ```
 
-If integration conflicts, the system never chooses a side or drops content. It:
+The same property holds when an append commit crosses a reorganization commit:
+append mode adds unique `records/` and `proposals/` paths, while the sole
+reorganization job owns `organization/` and can consume only proposals from its
+recorded base. Therefore every valid commit rebases without a path conflict as
+long as the single-reorganization lease holds.
+
+A Git conflict among valid commits indicates a broken invariant, a software
+defect, or repository history created outside this protocol. The system never
+chooses a side or drops content. It:
 
 - preserves the incoming commit/ref;
 - leaves `main` unchanged for that item;
 - records the conflicting paths and commits;
 - marks the knowledge update `needs-merge`;
-- queues or requests an explicit maintenance resolution.
+- queues or requests an explicit owner repair.
 
 The default is no automatic model-authored conflict resolution. That can be
-added later as a restricted maintenance workflow once its review semantics are
+added later as a restricted repair workflow once its review semantics are
 settled.
 
 ## Checkpoints, exits, and crashes
@@ -421,7 +462,7 @@ The journal records activities and outcomes:
 - fetch requested/completed/failed;
 - notes checkpoint validated/rejected;
 - notes commit integrated/needs-merge;
-- maintenance lease acquired/released;
+- reorganization lease acquired/released;
 - publish proposed/gated/completed/failed;
 - scratch cleaned or quarantined.
 
@@ -477,7 +518,7 @@ normal_mode = "append"
 max_file_chars = 200000
 max_repo_bytes = 1000000000
 checkpoint_on_clean_exit = true
-maintenance_requires_exclusive_lease = true
+reorganization_requires_exclusive_lease = true
 
 [scratch]
 max_bytes = 2000000000
@@ -493,7 +534,8 @@ public_requires_gate = true
 ```
 
 Worker overrides may make limits stricter. The worker cannot increase quotas,
-disable validation, bypass publication policy, or grant itself maintenance mode.
+disable validation, bypass publication policy, or grant itself reorganization
+mode.
 
 ## Owner interface
 
@@ -506,7 +548,7 @@ roster knowledge show <worker> <commit>
 roster knowledge diff <worker> <commit>
 roster knowledge pending <worker>
 roster knowledge resolve <worker> <pending-id>
-roster knowledge maintenance <worker> <task-file>
+roster knowledge reorganize <worker> <task-file>
 roster blobs ls [--worker <worker>]
 roster blobs show <blob-id>
 ```
@@ -520,7 +562,12 @@ commit, integration state, fetch receipt IDs, and published blob IDs.
 - Every run gets an isolated checkout pinned to a recorded base commit.
 - Boxes cannot mutate Git metadata, refs, hooks, or the canonical repository.
 - Normal concurrent runs cannot modify paths that existed at their base commit.
-- Only one maintenance writer exists for a worker at a time.
+- Append jobs write only new host-allocated paths under `records/` and
+  `proposals/`.
+- Only one reorganization writer exists for a worker at a time, and only that
+  mode changes existing paths under `organization/`.
+- Append and reorganization write sets remain disjoint, so valid commits rebase
+  without conflicts.
 - Integration is serialized per worker and never resolves conflicts by dropping
   a side.
 - Knowledge files are data and cannot register instructions, tools, skills,
@@ -538,7 +585,7 @@ commit, integration state, fetch receipt IDs, and published blob IDs.
 - Checkout creation failure prevents a knowledge-writing run from starting.
 - Notes validation or commit failure leaves canonical `main` unchanged.
 - Integration conflict preserves both histories and becomes `needs-merge`.
-- Maintenance lease loss prevents commit integration until ownership is
+- Reorganization lease loss prevents commit integration until ownership is
   re-established.
 - Publish failure leaves the source file in scratch until the operation is
   terminal or the run's failure-retention deadline expires.
@@ -557,9 +604,12 @@ commit, integration state, fetch receipt IDs, and published blob IDs.
 
 ### 2. Append-mode integration lane
 
-- Enforce unique added paths and add-only diffs.
+- Create the `records/`, `proposals/`, and `organization/` write domains.
+- Allocate collision-free record and proposal IDs on the host.
+- Enforce unique added paths and add-only diffs for append runs.
 - Serialize rebase/fast-forward integration per worker.
-- Preserve and expose conflicts as `needs-merge`.
+- Treat any conflict between valid commits as an invariant failure and preserve
+  it for owner repair.
 - Add checkpoint and crash-quarantine behavior.
 
 ### 3. Scratch lifecycle and fetch receipts
@@ -574,12 +624,13 @@ commit, integration state, fetch receipt IDs, and published blob IDs.
 - Freeze reviewed bytes across a gate decision.
 - Journal blob IDs, hashes, versions, visibility, and provenance.
 
-### 5. Exclusive maintenance mode
+### 5. Exclusive reorganization mode
 
-- Add the per-worker writer lease.
-- Drain pending integrations before maintenance.
-- Allow validated reorganizations and explicit conflict resolution.
-- Resume append writers from the new integrated head.
+- Add the per-worker reorganization lease.
+- Drain already queued integrations before taking the reorganization snapshot.
+- Allow validated changes under `organization/` while append jobs continue.
+- Rebase concurrent append commits and the reorganization commit in either
+  integration order without conflicts.
 
 ### 6. Naming cleanup and inspection
 
@@ -594,29 +645,31 @@ commit, integration state, fetch receipt IDs, and published blob IDs.
 2. Concurrent append-mode runs adding unique notes integrate without conflict or
    lost files.
 3. An append-mode run that modifies an existing file is rejected before commit.
-4. Two runs attempting the same new path produce a preserved `needs-merge`
-   result; neither side is silently chosen.
+4. The host never allocates the same record or proposal path to two runs; a
+   manually duplicated ID is rejected during validation.
 5. A worker cannot write another worker's repository or select its base commit.
 6. The box cannot modify `.git`, hooks, refs, or the canonical repository.
 7. A symlink or path escape in a knowledge diff is rejected.
 8. A clean run exit checkpoints valid notes before deleting scratch.
 9. An abnormal exit quarantines partial note changes instead of integrating
    them.
-10. A maintenance run starts only after earlier integrations drain and no other
-    knowledge writer is active.
-11. A fetch receipt records URL, time, media type, size, hash, and transient
+10. A reorganization run starts after earlier queued integrations drain, while
+    append-mode research runs may continue writing their isolated checkouts.
+11. Append commits created before, during, and after a reorganization all rebase
+    cleanly because their paths do not overlap the reorganization write set.
+12. A fetch receipt records URL, time, media type, size, hash, and transient
     scratch pointer without copying the body into the journal.
-12. Scratch belonging to one run is not visible to another and is removed after
+13. Scratch belonging to one run is not visible to another and is removed after
     exit.
-13. A gated publication stores exactly the reviewed bytes and returns an
+14. A gated publication stores exactly the reviewed bytes and returns an
     immutable blob ID and hash.
-14. Publishing another version never overwrites an earlier blob.
-15. Journal entries link fetch receipts, Git commits, and blobs into one
+15. Publishing another version never overwrites an earlier blob.
+16. Journal entries link fetch receipts, Git commits, and blobs into one
     attributable chain.
-16. Knowledge repository content never appears in the interaction Memory block.
-17. A note named `AGENTS.md`, a Git hook, or a pi configuration file cannot alter
+17. Knowledge repository content never appears in the interaction Memory block.
+18. A note named `AGENTS.md`, a Git hook, or a pi configuration file cannot alter
     runtime instructions or tool registration.
-18. Gateway grants, gates, budgets, and action behavior are unchanged by notes
+19. Gateway grants, gates, budgets, and action behavior are unchanged by notes
     or publication content.
 
 ## Open decisions
@@ -628,8 +681,9 @@ These choices are intentionally not settled by this spec:
    required for reproducibility?
 2. **Checkpoint cadence.** Is clean-exit checkpointing enough, or should long
    runs checkpoint automatically after a time or byte threshold?
-3. **Conflict resolution authority.** Should `needs-merge` require the owner, or
-   may a restricted maintenance run propose a resolution for owner review?
+3. **Invariant repair authority.** If an external commit or software defect
+   creates a Git conflict, must the owner repair it directly, or may a restricted
+   repair run propose a change for owner review?
 4. **Remote backup.** Is the canonical Git repository local-only, mirrored to a
    private remote, or backed up through a separate host mechanism?
 5. **Published aliases.** Who may update a logical `latest` URL, and does that
