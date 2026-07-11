@@ -136,6 +136,9 @@ pub fn validate_worker_overlay(base: &StoragePolicy, worker: &StoragePolicy) -> 
     if worker.knowledge.enabled && !base.knowledge.enabled {
         return Err("worker cannot enable knowledge disabled by org policy".into());
     }
+    if worker.knowledge.checkpoint_on_clean_exit && !base.knowledge.checkpoint_on_clean_exit {
+        return Err("worker cannot enable checkpoints disabled by org policy".into());
+    }
     if worker.knowledge.max_file_chars > base.knowledge.max_file_chars
         || worker.knowledge.max_repo_bytes > base.knowledge.max_repo_bytes
     {
@@ -145,6 +148,11 @@ pub fn validate_worker_overlay(base: &StoragePolicy, worker: &StoragePolicy) -> 
         || worker.scratch.max_files > base.scratch.max_files
     {
         return Err("worker scratch limits cannot exceed org limits".into());
+    }
+    if (base.scratch.cleanup_on_exit && !worker.scratch.cleanup_on_exit)
+        || (base.scratch.cleanup_on_crash && !worker.scratch.cleanup_on_crash)
+    {
+        return Err("worker cannot weaken org scratch cleanup policy".into());
     }
     if worker.publishing.max_blob_bytes > base.publishing.max_blob_bytes {
         return Err("worker publishing limit cannot exceed org limit".into());
@@ -159,6 +167,11 @@ pub fn validate_worker_overlay(base: &StoragePolicy, worker: &StoragePolicy) -> 
     }
     if base.publishing.public_requires_gate && !worker.publishing.public_requires_gate {
         return Err("worker cannot remove the public publication gate".into());
+    }
+    if base.publishing.default_visibility == "private"
+        && worker.publishing.default_visibility == "public"
+    {
+        return Err("worker cannot broaden default publication visibility".into());
     }
     Ok(())
 }

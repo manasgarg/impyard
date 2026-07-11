@@ -203,7 +203,7 @@ async fn run_box(
     code: Option<&CodeSpec>,
     run_context: &crate::memory::RunContext,
 ) -> Result<(String, PathBuf, &'static str, Option<i32>), BErr> {
-    let Provisioned { mut args, identity_file, container, session_dir, run_dir, repo } =
+    let Provisioned { mut args, identity_file, container, session_dir, run_dir, repo, storage } =
         provision_box(worker, run_id, task_id, code, run_context).await?;
     args.extend(pi_prefix(&repo, "json", &session_dir)?);
     append_cache_session_id(&mut args, &compiled.cache.route_key);
@@ -251,12 +251,13 @@ async fn run_box(
         tokio::select! {
             s = child.wait() => break s?,
             _ = tokio::time::sleep_until(deadline), if !killed => { docker_kill(&container).await; ended_by = "ceiling"; killed = true; }
-            _ = tokio::signal::ctrl_c(), if !killed => { docker_kill(&container).await; killed = true; }
-            _ = sigterm.recv(), if !killed => { docker_kill(&container).await; killed = true; }
+            _ = tokio::signal::ctrl_c(), if !killed => { docker_kill(&container).await; ended_by = "signal"; killed = true; }
+            _ = sigterm.recv(), if !killed => { docker_kill(&container).await; ended_by = "signal"; killed = true; }
         }
     };
     let _ = stream.await;
     let _ = std::fs::remove_file(&identity_file); // single-use token
+    finalize_storage(&storage, ended_by == "exit" && status.success());
     let _ = crate::runlog::finish(run_id, ended_by, status.code());
 
     Ok((run_id.to_string(), run_dir, ended_by, status.code()))
@@ -298,7 +299,7 @@ pub async fn run_session(
         }
     };
 
-    let Provisioned { mut args, identity_file, container, session_dir, run_dir, repo } =
+    let Provisioned { mut args, identity_file, container, session_dir, run_dir, repo, storage } =
         match provision_box(worker, run_id, "", None, &start_context).await {
             Ok(provisioned) => provisioned,
             Err(error) => {
@@ -333,6 +334,7 @@ pub async fn run_session(
     let idle = Duration::from_secs(idle_secs);
     let mut rx_open = true;
     let mut busy = false; // a turn is in progress
+    let mut clean_exit = false;
     let mut pending: std::collections::VecDeque<SessionMessage> = std::collections::VecDeque::new();
     loop {
         // Serialize: feed the next message only once the previous turn is done, so
@@ -394,7 +396,7 @@ pub async fn run_session(
                 }
                 _ => break, // box closed stdout / exited
             },
-            _ = tokio::time::sleep(idle), if !busy => break, // idle only when not mid-turn
+            _ = tokio::time::sleep(idle), if !busy => { clean_exit = true; break; }, // idle only when not mid-turn
         }
     }
 
@@ -402,7 +404,8 @@ pub async fn run_session(
     docker_kill(&container).await;
     let _ = child.wait().await;
     let _ = std::fs::remove_file(&identity_file); // single-use token
-    let _ = crate::runlog::finish(run_id, "idle", Some(0));
+    finalize_storage(&storage, clean_exit);
+    let _ = crate::runlog::finish(run_id, if clean_exit { "idle" } else { "error" }, if clean_exit { Some(0) } else { None });
     eprintln!("session {run_id} [{worker}] ended");
     Ok(())
 }
@@ -442,6 +445,7 @@ struct Provisioned {
     session_dir: PathBuf,
     run_dir: PathBuf,
     repo: PathBuf,
+    storage: crate::knowledge::RunStorage,
 }
 
 async fn provision_box(
@@ -466,6 +470,7 @@ async fn provision_box(
     let pihome = run_dir.join(".pihome");
     std::fs::create_dir_all(&workspace)?;
     std::fs::create_dir_all(&session)?;
+    let storage = crate::knowledge::provision(worker, run_id)?;
 
     // Code task: a writable git worktree on a fresh per-run branch.
     let worktree: Option<PathBuf> = match code {
@@ -521,6 +526,16 @@ async fn provision_box(
     }
     let mount = |p: &Path| format!("{0}:{0}", p.display());
     args.extend(["-v".into(), mount(&workspace), "-v".into(), mount(&session), "-v".into(), mount(&pihome)]);
+    args.extend([
+        "-v".into(),
+        format!("{}:{}", storage.scratch.display(), storage.scratch_mount()),
+    ]);
+    if let Some(knowledge) = storage.knowledge.as_ref() {
+        args.extend([
+            "-v".into(),
+            format!("{}:{}", knowledge.path.display(), knowledge.knowledge_mount()),
+        ]);
+    }
     if let Some(channel) = run_context.channel_id.as_deref() {
         let channel_dir = repo.join("channels").join(channel);
         if channel_dir.is_dir() {
@@ -538,6 +553,17 @@ async fn provision_box(
     args.extend(["-e".into(), format!("HOME={}", pihome.display())]);
     args.extend(["-e".into(), format!("PI_CODING_AGENT_DIR={}", pihome.join("agent").display())]);
     args.extend(["-e".into(), format!("ROSTER_RUN_ID={run_id}")]);
+    args.extend(["-e".into(), format!("ROSTER_SCRATCH_DIR={}", storage.scratch_mount())]);
+    if let Some(knowledge) = storage.knowledge.as_ref() {
+        args.extend([
+            "-e".into(),
+            format!("ROSTER_KNOWLEDGE_DIR={}", knowledge.knowledge_mount()),
+            "-e".into(),
+            format!("ROSTER_KNOWLEDGE_BASE={}", knowledge.base_commit),
+            "-e".into(),
+            format!("ROSTER_RECORD_NAMESPACE={}", knowledge.record_namespace),
+        ]);
+    }
     if !task_id.is_empty() {
         args.extend(["-e".into(), format!("ROSTER_TASK_ID={task_id}")]);
     }
@@ -556,11 +582,40 @@ async fn provision_box(
     let cwd = worktree.as_ref().unwrap_or(&workspace);
     args.extend(["-w".into(), cwd.display().to_string(), "roster-box".into()]);
 
-    Ok(Provisioned { args, identity_file, container, session_dir: session, run_dir, repo })
+    Ok(Provisioned { args, identity_file, container, session_dir: session, run_dir, repo, storage })
+}
+
+fn finalize_storage(storage: &crate::knowledge::RunStorage, clean: bool) {
+    if let Some(checkout) = storage.knowledge.as_ref() {
+        if clean && checkout.knowledge_policy.checkpoint_on_clean_exit {
+            match crate::knowledge::checkpoint(checkout) {
+                Ok(result) if result.files > 0 => eprintln!(
+                    "knowledge {}: integrated {} file(s) at {}",
+                    checkout.run_id,
+                    result.files,
+                    result.commit.as_deref().unwrap_or("-")
+                ),
+                Ok(_) => {}
+                Err(error) => eprintln!("knowledge {}: checkpoint rejected: {error}", checkout.run_id),
+            }
+        } else if clean {
+            let _ = crate::runlog::update_knowledge(
+                &checkout.run_id,
+                "uncheckpointed",
+                None,
+                Some("automatic checkpoint disabled by policy"),
+            );
+        } else {
+            crate::knowledge::quarantine(checkout, "run did not exit cleanly");
+        }
+    }
+    if let Err(error) = crate::knowledge::cleanup_scratch(storage, !clean) {
+        eprintln!("scratch {}: cleanup failed: {error}", storage.run_id);
+    }
 }
 
 fn append_state_shadows(args: &mut Vec<String>, repo: &Path) {
-    for name in ["runs", "memory", "notes", "journal", "queue", "gates", "channels"] {
+    for name in ["runs", "memory", "notes", "journal", "queue", "gates", "channels", "knowledge", "blobs"] {
         args.extend([
             "--tmpfs".into(),
             format!("{}:rw,noexec,nosuid,nodev", repo.join(name).display()),
@@ -738,12 +793,12 @@ mod tests {
         let repo = Path::new("/srv/roster");
         let mut args = Vec::new();
         append_state_shadows(&mut args, repo);
-        for name in ["runs", "memory", "notes", "journal", "queue", "gates", "channels"] {
+        for name in ["runs", "memory", "notes", "journal", "queue", "gates", "channels", "knowledge", "blobs"] {
             assert!(args.contains(&format!(
                 "/srv/roster/{name}:rw,noexec,nosuid,nodev"
             )));
         }
-        assert_eq!(args.iter().filter(|arg| *arg == "--tmpfs").count(), 7);
+        assert_eq!(args.iter().filter(|arg| *arg == "--tmpfs").count(), 9);
     }
 
     #[test]

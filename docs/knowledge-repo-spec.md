@@ -1,9 +1,11 @@
 # Worker knowledge repository, scratch space, and publishing (spec)
 
-**Status: proposed — not yet implemented.** This document defines how a worker
-researches and organizes knowledge without mixing research notes with interaction
-memory. It also defines the concurrency model for multiple runs of the same
-worker.
+**Status: partially implemented.** Repository isolation, append-mode validation,
+serialized integration, clean-exit checkpoints, crash quarantine, scratch
+cleanup, compiled storage policy, run history, and basic owner inspection are
+built. Download receipts, publication, reorganization jobs, mid-run checkpoints,
+hard scratch quotas, and operational repair commands remain to be implemented.
+This document defines the complete target.
 
 ## Outcome
 
@@ -587,14 +589,17 @@ commit, integration state, fetch receipt IDs, and published blob IDs.
 
 ## Build order
 
-### 1. Repository isolation and host commits
+Current implementation status is recorded here so the target design and shipped
+surface do not drift:
+
+### 1. Repository isolation and host commits — built
 
 - Create one canonical Git repository per worker.
 - Provision isolated per-run checkouts with read-only Git metadata.
 - Implement diff validation, trusted commit trailers, and final checkpoint.
 - Record base and produced commits in run history.
 
-### 2. Append-mode integration lane
+### 2. Append-mode integration lane — built for clean-exit checkpoints
 
 - Create the `records/` and `organization/` write domains.
 - Allocate collision-free record IDs on the host.
@@ -604,7 +609,7 @@ commit, integration state, fetch receipt IDs, and published blob IDs.
   it for owner repair.
 - Add checkpoint and crash-quarantine behavior.
 
-### 3. Scratch lifecycle and fetch receipts
+### 3. Scratch lifecycle and fetch receipts — scratch cleanup built; receipts and hard quotas pending
 
 - Provision isolated quota-bound scratch directories.
 - Journal governed fetch receipts with hashes and transient pointers.

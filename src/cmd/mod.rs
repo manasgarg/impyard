@@ -8,6 +8,7 @@ pub mod connect;
 pub mod create;
 pub mod deploy;
 pub mod gates;
+pub mod knowledge;
 pub mod listen;
 pub mod notes;
 pub mod queue;

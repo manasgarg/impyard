@@ -17,6 +17,7 @@ mod discord;
 mod gate;
 mod journal;
 mod judge;
+mod knowledge;
 mod ledger;
 mod memory;
 mod providers;
@@ -62,6 +63,7 @@ async fn main() {
             eprintln!("warning: `roster notes` is deprecated; use `roster memory`");
             cmd::notes::run(&args[2..])
         }
+        "knowledge" => cmd::knowledge::run(&args[2..]),
         "runs" => cmd::runs::run(&args[2..]),
         "channel" => cmd::channel::run(&args[2..]),
         "session" => cmd::session::run(&args[2..]).await,
@@ -124,6 +126,7 @@ fn print_help() {
            listen --worker <n>          run the Discord gateway (inbound)\n  \
            channel [ls|trust|mode|memory]  manage channel behavior\n  \
            memory [ls|show|rm|correct|pin|explain] inspect and repair interaction memory\n  \
+           knowledge [init|status|log|show] inspect worker world knowledge\n  \
            runs [ls|show|context]      inspect executions and exact compiled context\n  \
            gates [ls|show|approve|deny] approval desk for proposed actions\n\
          {providers}\n  \

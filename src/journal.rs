@@ -19,14 +19,25 @@ fn path(worker: &str) -> PathBuf {
 /// (empty for events not tied to a run). Best-effort (a journal write must never
 /// fail an action); the authoritative record lives elsewhere.
 pub fn append(worker: &str, run_id: &str, kind: &str, detail: Value) {
+    let _ = append_required(worker, run_id, kind, detail);
+}
+
+/// Durable content operations use the journal as their recovery index. They
+/// call this variant and fail closed instead of claiming success when the
+/// pointer could not be recorded.
+pub fn append_required(worker: &str, run_id: &str, kind: &str, detail: Value) -> Result<(), String> {
     let p = path(worker);
     if let Some(dir) = p.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
     }
     let ev = json!({ "ts": now_rfc3339(), "worker": worker, "run_id": run_id, "kind": kind, "detail": detail });
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&p) {
-        let _ = writeln!(f, "{ev}");
-    }
+    let mut f = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)
+        .map_err(|error| error.to_string())?;
+    writeln!(f, "{ev}").map_err(|error| error.to_string())?;
+    f.sync_data().map_err(|error| error.to_string())
 }
 
 /// Every event for a given run, oldest first — powers `queue show`'s run status.

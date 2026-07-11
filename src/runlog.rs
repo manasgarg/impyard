@@ -8,6 +8,25 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnowledgeRunRecord {
+    pub base_commit: String,
+    pub mode: String,
+    pub record_namespace: String,
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub produced_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScratchRunRecord {
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRecord {
     pub id: String,
     pub worker: String,
@@ -22,6 +41,10 @@ pub struct RunRecord {
     pub ended_by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge: Option<KnowledgeRunRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scratch: Option<ScratchRunRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +77,8 @@ pub fn start(run_id: &str, worker: &str, kind: &str, task_id: Option<&str>) -> R
         task_id: task_id.filter(|s| !s.is_empty()).map(String::from),
         ended_by: None,
         exit_code: None,
+        knowledge: None,
+        scratch: None,
     };
     save(&record)
 }
@@ -80,6 +105,43 @@ pub fn fail(run_id: &str) {
         record.ended_by = Some("error".into());
         let _ = save(&record);
     }
+}
+
+pub fn attach_storage(
+    run_id: &str,
+    knowledge: Option<KnowledgeRunRecord>,
+) -> Result<(), String> {
+    let mut record = load(run_id).ok_or_else(|| format!("no run record for {run_id}"))?;
+    record.knowledge = knowledge;
+    record.scratch = Some(ScratchRunRecord {
+        state: "active".into(),
+        error: None,
+    });
+    save(&record)
+}
+
+pub fn update_knowledge(
+    run_id: &str,
+    state: &str,
+    produced_commit: Option<&str>,
+    error: Option<&str>,
+) -> Result<(), String> {
+    let mut record = load(run_id).ok_or_else(|| format!("no run record for {run_id}"))?;
+    if let Some(knowledge) = record.knowledge.as_mut() {
+        knowledge.state = state.into();
+        knowledge.produced_commit = produced_commit.map(String::from);
+        knowledge.error = error.map(String::from);
+    }
+    save(&record)
+}
+
+pub fn update_scratch(run_id: &str, state: &str, error: Option<&str>) -> Result<(), String> {
+    let mut record = load(run_id).ok_or_else(|| format!("no run record for {run_id}"))?;
+    record.scratch = Some(ScratchRunRecord {
+        state: state.into(),
+        error: error.map(String::from),
+    });
+    save(&record)
 }
 
 fn save(record: &RunRecord) -> Result<(), String> {

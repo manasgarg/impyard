@@ -104,6 +104,24 @@ fn show(args: &[String]) -> Result<(), BErr> {
         if let Some(exit) = record.exit_code {
             println!("exit      {exit}");
         }
+        if let Some(knowledge) = &record.knowledge {
+            println!("knowledge {}", knowledge.state);
+            println!("  mode    {}", knowledge.mode);
+            println!("  base    {}", knowledge.base_commit);
+            println!("  records {}", knowledge.record_namespace);
+            if let Some(commit) = &knowledge.produced_commit {
+                println!("  commit  {commit}");
+            }
+            if let Some(error) = &knowledge.error {
+                println!("  error   {}", runlog::one_line(error, 200));
+            }
+        }
+        if let Some(scratch) = &record.scratch {
+            println!("scratch   {}", scratch.state);
+            if let Some(error) = &scratch.error {
+                println!("  error   {}", runlog::one_line(error, 200));
+            }
+        }
     }
     println!("path      {}", run.run_dir.display());
 
