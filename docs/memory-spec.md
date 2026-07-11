@@ -110,9 +110,7 @@ permanent fact about the user.
 Interaction memory does not store the worker's research about the world.
 
 - Sources, extracted material, claims, research notes, syntheses, and briefs
-  belong in the worker's Git-backed knowledge repository or temporary scratch
-  space.
-- Published documents belong in the governed blob store.
+  belong in the worker's Git-backed knowledge repository or container `/tmp`.
 - Memory holds continuity about people, channels, and their interactions. It is
   never an automatically recalled index of research artifacts.
 
@@ -369,4 +367,4 @@ existing admin/owner identity-edit path remains unchanged.
 - Group recall of private user memory: off.
 - Recall: bounded and logged from the first version.
 - Research material never enters interaction memory; it stays in the knowledge
-  repository, scratch space, or publication store.
+  repository or container temporary files.

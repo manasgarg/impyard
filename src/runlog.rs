@@ -20,13 +20,6 @@ pub struct KnowledgeRunRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScratchRunRecord {
-    pub state: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRecord {
     pub id: String,
     pub worker: String,
@@ -43,12 +36,6 @@ pub struct RunRecord {
     pub exit_code: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub knowledge: Option<KnowledgeRunRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scratch: Option<ScratchRunRecord>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fetch_receipts: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub published_blobs: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,9 +69,6 @@ pub fn start(run_id: &str, worker: &str, kind: &str, task_id: Option<&str>) -> R
         ended_by: None,
         exit_code: None,
         knowledge: None,
-        scratch: None,
-        fetch_receipts: Vec::new(),
-        published_blobs: Vec::new(),
     };
     save(&record)
 }
@@ -119,10 +103,6 @@ pub fn attach_storage(
 ) -> Result<(), String> {
     let mut record = load(run_id).ok_or_else(|| format!("no run record for {run_id}"))?;
     record.knowledge = knowledge;
-    record.scratch = Some(ScratchRunRecord {
-        state: "active".into(),
-        error: None,
-    });
     save(&record)
 }
 
@@ -137,31 +117,6 @@ pub fn update_knowledge(
         knowledge.state = state.into();
         knowledge.produced_commit = produced_commit.map(String::from);
         knowledge.error = error.map(String::from);
-    }
-    save(&record)
-}
-
-pub fn update_scratch(run_id: &str, state: &str, error: Option<&str>) -> Result<(), String> {
-    let mut record = load(run_id).ok_or_else(|| format!("no run record for {run_id}"))?;
-    record.scratch = Some(ScratchRunRecord {
-        state: state.into(),
-        error: error.map(String::from),
-    });
-    save(&record)
-}
-
-pub fn record_fetch_receipt(run_id: &str, receipt_id: &str) -> Result<(), String> {
-    let mut record = load(run_id).ok_or_else(|| format!("no run record for {run_id}"))?;
-    if !record.fetch_receipts.iter().any(|value| value == receipt_id) {
-        record.fetch_receipts.push(receipt_id.into());
-    }
-    save(&record)
-}
-
-pub fn record_published_blob(run_id: &str, blob_id: &str) -> Result<(), String> {
-    let mut record = load(run_id).ok_or_else(|| format!("no run record for {run_id}"))?;
-    if !record.published_blobs.iter().any(|value| value == blob_id) {
-        record.published_blobs.push(blob_id.into());
     }
     save(&record)
 }
@@ -494,16 +449,18 @@ mod tests {
     }
 
     #[test]
-    fn legacy_run_records_default_to_no_fetch_receipts() {
+    fn legacy_run_records_with_removed_artifact_fields_still_parse() {
         let record: RunRecord = serde_json::from_value(serde_json::json!({
             "id": "run-1",
             "worker": "yuko",
             "kind": "task",
             "state": "done",
-            "started_at": "2026-01-01T00:00:00Z"
+            "started_at": "2026-01-01T00:00:00Z",
+            "scratch": { "state": "cleaned" },
+            "fetch_receipts": ["fetch_old"],
+            "published_blobs": ["blob_old"]
         }))
         .unwrap();
-        assert!(record.fetch_receipts.is_empty());
-        assert!(record.published_blobs.is_empty());
+        assert_eq!(record.id, "run-1");
     }
 }

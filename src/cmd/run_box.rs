@@ -17,6 +17,7 @@ const LOCKDOWN_NETWORK: &str = "roster-locked";
 const GATEWAY_PORT: u16 = 7300;
 const BOX_CA_PATH: &str = "/opt/roster/ca.crt";
 const SENTINEL: &str = "roster-sentinel-no-real-credential-in-box";
+const CONTAINER_TEMP: &str = "/tmp:rw,nosuid,nodev,size=2147483648,mode=1777";
 
 pub async fn run(args: &[String]) -> Result<(), BErr> {
     let mut worker = "adhoc".to_string();
@@ -595,6 +596,7 @@ async fn provision_box(
         "-v".into(),
         format!("{0}:{0}:ro", repo.display()),
     ];
+    append_container_temp(&mut args);
     // The repo contains gitignored trusted runtime state. Shadow it before
     // overlaying only this run's writable paths and authorized channel.
     append_state_shadows(&mut args, &repo);
@@ -611,10 +613,6 @@ async fn provision_box(
         mount(&session),
         "-v".into(),
         mount(&pihome),
-    ]);
-    args.extend([
-        "-v".into(),
-        format!("{}:{}", storage.scratch.display(), storage.scratch_mount()),
     ]);
     if let Some(knowledge) = storage.knowledge.as_ref() {
         args.extend([
@@ -643,10 +641,7 @@ async fn provision_box(
         format!("PI_CODING_AGENT_DIR={}", pihome.join("agent").display()),
     ]);
     args.extend(["-e".into(), format!("ROSTER_RUN_ID={run_id}")]);
-    args.extend([
-        "-e".into(),
-        format!("ROSTER_SCRATCH_DIR={}", storage.scratch_mount()),
-    ]);
+    args.extend(["-e".into(), "TMPDIR=/tmp".into()]);
     if let Some(knowledge) = storage.knowledge.as_ref() {
         args.extend([
             "-e".into(),
@@ -724,9 +719,6 @@ fn finalize_storage(storage: &mut crate::knowledge::RunStorage, clean: bool) {
             crate::knowledge::quarantine(checkout, "run did not exit cleanly");
         }
     }
-    if let Err(error) = crate::knowledge::cleanup_scratch(storage, !clean) {
-        eprintln!("scratch {}: cleanup failed: {error}", storage.run_id);
-    }
     if let Err(error) = crate::knowledge::release_reorganization(storage) {
         eprintln!(
             "knowledge {}: could not journal reorganization lease release: {error}",
@@ -745,13 +737,16 @@ fn append_state_shadows(args: &mut Vec<String>, repo: &Path) {
         "gates",
         "channels",
         "knowledge",
-        "blobs",
     ] {
         args.extend([
             "--tmpfs".into(),
             format!("{}:rw,noexec,nosuid,nodev", repo.join(name).display()),
         ]);
     }
+}
+
+fn append_container_temp(args: &mut Vec<String>) {
+    args.extend(["--tmpfs".into(), CONTAINER_TEMP.into()]);
 }
 
 // ── lockdown ─────────────────────────────────────────────────────────────────
@@ -958,11 +953,17 @@ mod tests {
             "gates",
             "channels",
             "knowledge",
-            "blobs",
         ] {
             assert!(args.contains(&format!("/srv/roster/{name}:rw,noexec,nosuid,nodev")));
         }
-        assert_eq!(args.iter().filter(|arg| *arg == "--tmpfs").count(), 9);
+        assert_eq!(args.iter().filter(|arg| *arg == "--tmpfs").count(), 8);
+    }
+
+    #[test]
+    fn container_temp_is_a_bounded_tmpfs() {
+        let mut args = Vec::new();
+        append_container_temp(&mut args);
+        assert_eq!(args, vec!["--tmpfs", CONTAINER_TEMP]);
     }
 
     #[test]

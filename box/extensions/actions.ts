@@ -59,64 +59,6 @@ interface PiToolApi {
 
 export default function rosterActionTools(api: PiToolApi): void {
   api.registerTool({
-    name: "fetch_to_scratch",
-    label: "fetch_to_scratch",
-    description:
-      "Download exact source bytes into this run's temporary scratch space. Use this for PDFs, datasets, archives, " +
-      "or any source whose original bytes you need to inspect. The result includes a durable fetch receipt ID, URL, " +
-      "media type, size, and SHA-256 hash. Scratch bytes are deleted when the run exits.",
-    promptSnippet: "fetch_to_scratch(url, path): governed exact-byte download with durable receipt",
-    parameters: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "HTTP or HTTPS source URL." },
-        path: { type: "string", description: "Relative destination inside scratch, such as downloads/report.pdf." },
-      },
-      required: ["url", "path"],
-      additionalProperties: false,
-    },
-    async execute(_id, params) {
-      const s = await submit("fetch-to-scratch", params, "Preserve exact source bytes for this research run.");
-      return { content: [{ type: "text", text: describe(s) }] };
-    },
-  });
-
-  api.registerTool({
-    name: "publish_blob",
-    label: "publish_blob",
-    description:
-      "Publish a finished file from this run's scratch or knowledge checkout into the immutable blob store. " +
-      "The trusted host freezes and hashes the exact bytes before any approval. Private publication normally runs " +
-      "immediately; public publication normally waits for owner approval.",
-    promptSnippet: "publish_blob(path, logical_name, media_type, visibility, rationale, note_ids?): publish immutable bytes",
-    parameters: {
-      type: "object",
-      properties: {
-        path: {
-          type: "string",
-          description: "Absolute source under /opt/roster/scratch or /opt/roster/knowledge.",
-        },
-        logical_name: { type: "string", description: "Stable human-readable document name." },
-        media_type: { type: "string", description: "Document media type, such as text/markdown or application/pdf." },
-        visibility: { type: "string", enum: ["private", "public"] },
-        rationale: { type: "string", description: "Why this document should be published." },
-        note_ids: {
-          type: "array",
-          items: { type: "string" },
-          description: "Optional stable knowledge note IDs supporting this document.",
-        },
-      },
-      required: ["path", "logical_name", "media_type", "rationale"],
-      additionalProperties: false,
-    },
-    async execute(_id, params) {
-      const { rationale, ...payload } = params as { rationale: string } & Record<string, unknown>;
-      const s = await submit("publish-blob", payload, rationale);
-      return { content: [{ type: "text", text: describe(s) }] };
-    },
-  });
-
-  api.registerTool({
     name: "message_user",
     label: "message_user",
     description:

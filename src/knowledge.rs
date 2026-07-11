@@ -3,7 +3,7 @@
 //! commit in a serialized per-worker integration lane.
 
 use crate::runlog::KnowledgeRunRecord;
-use crate::storage::{KnowledgePolicy, ScratchPolicy};
+use crate::storage::KnowledgePolicy;
 use crate::util::root;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,7 +14,6 @@ use std::thread;
 use std::time::Duration;
 
 const KNOWLEDGE_MOUNT: &str = "/opt/roster/knowledge";
-const SCRATCH_MOUNT: &str = "/opt/roster/scratch";
 const ALLOWED_EXTENSIONS: &[&str] = &["md", "json", "jsonl", "yaml", "yml", "csv", "txt"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,16 +60,8 @@ impl Checkout {
 pub struct RunStorage {
     pub worker: String,
     pub run_id: String,
-    pub scratch: PathBuf,
-    pub scratch_policy: ScratchPolicy,
     pub knowledge: Option<Checkout>,
     _reorganization_lease: Option<Lease>,
-}
-
-impl RunStorage {
-    pub fn scratch_mount(&self) -> &'static str {
-        SCRATCH_MOUNT
-    }
 }
 
 impl Drop for RunStorage {
@@ -186,8 +177,6 @@ pub fn provision(worker: &str, run_id: &str, requested_mode: &str) -> Result<Run
     let mode = KnowledgeMode::parse(requested_mode)?;
     let policy = crate::storage::load(worker);
     let run_dir = root().join("runs").join(run_id);
-    let scratch = run_dir.join("scratch");
-    fs::create_dir_all(&scratch).map_err(|error| error.to_string())?;
 
     if !policy.knowledge.enabled {
         if mode == KnowledgeMode::Reorganization {
@@ -197,8 +186,6 @@ pub fn provision(worker: &str, run_id: &str, requested_mode: &str) -> Result<Run
         return Ok(RunStorage {
             worker: worker.into(),
             run_id: run_id.into(),
-            scratch,
-            scratch_policy: policy.scratch,
             knowledge: None,
             _reorganization_lease: None,
         });
@@ -255,8 +242,6 @@ pub fn provision(worker: &str, run_id: &str, requested_mode: &str) -> Result<Run
     Ok(RunStorage {
         worker: worker.into(),
         run_id: run_id.into(),
-        scratch,
-        scratch_policy: policy.scratch,
         knowledge: Some(Checkout {
             worker: worker.into(),
             run_id: run_id.into(),
@@ -511,45 +496,6 @@ pub fn quarantine(checkout: &Checkout, reason: &str) {
         "knowledge-checkout-quarantined",
         json!({ "base_commit": checkout.base_commit, "path": checkout.path, "reason": reason }),
     );
-}
-
-pub fn cleanup_scratch(storage: &RunStorage, crashed: bool) -> Result<(), String> {
-    let cleanup = if crashed {
-        storage.scratch_policy.cleanup_on_crash
-    } else {
-        storage.scratch_policy.cleanup_on_exit
-    };
-    if !cleanup {
-        crate::runlog::update_scratch(&storage.run_id, "preserved", None)?;
-        return Ok(());
-    }
-    let _ = fs::remove_dir_all(
-        root()
-            .join("runs")
-            .join(&storage.run_id)
-            .join("fetch-staging"),
-    );
-    match fs::remove_dir_all(&storage.scratch) {
-        Ok(()) => {
-            crate::runlog::update_scratch(&storage.run_id, "cleaned", None)?;
-            let _ = crate::journal::append_required(
-                &journal_worker(&storage.worker),
-                &storage.run_id,
-                "scratch-cleaned",
-                json!({ "crashed": crashed }),
-            );
-            Ok(())
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            crate::runlog::update_scratch(&storage.run_id, "cleaned", None)
-        }
-        Err(error) => {
-            let message = error.to_string();
-            let _ =
-                crate::runlog::update_scratch(&storage.run_id, "cleanup-failed", Some(&message));
-            Err(message)
-        }
-    }
 }
 
 pub fn release_reorganization(storage: &mut RunStorage) -> Result<(), String> {

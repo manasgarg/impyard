@@ -1,6 +1,6 @@
-//! Owner-controlled policy for the worker knowledge repository, temporary
-//! scratch space, and governed publication. These settings are enforcement
-//! inputs; they are compiled off-box and are never learned from prompt text.
+//! Owner-controlled policy for the worker knowledge repository. These settings
+//! are enforcement inputs; they are compiled off-box and are never learned from
+//! prompt text.
 
 use crate::util::root;
 use serde::{Deserialize, Serialize};
@@ -30,56 +30,10 @@ impl Default for KnowledgePolicy {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ScratchPolicy {
-    pub max_bytes: u64,
-    pub max_files: usize,
-    pub cleanup_on_exit: bool,
-    pub cleanup_on_crash: bool,
-}
-
-impl Default for ScratchPolicy {
-    fn default() -> Self {
-        Self {
-            max_bytes: 2_000_000_000,
-            max_files: 10_000,
-            cleanup_on_exit: true,
-            cleanup_on_crash: true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct PublishingPolicy {
-    pub max_blob_bytes: u64,
-    pub allowed_media_types: Vec<String>,
-    pub default_visibility: String,
-    pub public_requires_gate: bool,
-}
-
-impl Default for PublishingPolicy {
-    fn default() -> Self {
-        Self {
-            max_blob_bytes: 100_000_000,
-            allowed_media_types: vec![
-                "text/markdown".into(),
-                "text/html".into(),
-                "application/pdf".into(),
-            ],
-            default_visibility: "private".into(),
-            public_requires_gate: true,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StoragePolicy {
     pub knowledge: KnowledgePolicy,
-    pub scratch: ScratchPolicy,
-    pub publishing: PublishingPolicy,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -112,20 +66,6 @@ pub fn validate(policy: &StoragePolicy) -> Result<(), String> {
     if !policy.knowledge.reorganization_requires_exclusive_lease {
         return Err("knowledge reorganization must require an exclusive lease".into());
     }
-    if policy.scratch.max_bytes == 0 || policy.scratch.max_files == 0 {
-        return Err("scratch limits must be positive".into());
-    }
-    if policy.publishing.max_blob_bytes == 0 {
-        return Err("publishing.max_blob_bytes must be positive".into());
-    }
-    if policy.publishing.default_visibility != "private"
-        && policy.publishing.default_visibility != "public"
-    {
-        return Err("publishing.default_visibility must be private or public".into());
-    }
-    if policy.publishing.allowed_media_types.is_empty() {
-        return Err("publishing.allowed_media_types cannot be empty".into());
-    }
     Ok(())
 }
 
@@ -144,35 +84,6 @@ pub fn validate_worker_overlay(base: &StoragePolicy, worker: &StoragePolicy) -> 
     {
         return Err("worker knowledge limits cannot exceed org limits".into());
     }
-    if worker.scratch.max_bytes > base.scratch.max_bytes
-        || worker.scratch.max_files > base.scratch.max_files
-    {
-        return Err("worker scratch limits cannot exceed org limits".into());
-    }
-    if (base.scratch.cleanup_on_exit && !worker.scratch.cleanup_on_exit)
-        || (base.scratch.cleanup_on_crash && !worker.scratch.cleanup_on_crash)
-    {
-        return Err("worker cannot weaken org scratch cleanup policy".into());
-    }
-    if worker.publishing.max_blob_bytes > base.publishing.max_blob_bytes {
-        return Err("worker publishing limit cannot exceed org limit".into());
-    }
-    if worker
-        .publishing
-        .allowed_media_types
-        .iter()
-        .any(|kind| !base.publishing.allowed_media_types.contains(kind))
-    {
-        return Err("worker publishing media types must be a subset of org policy".into());
-    }
-    if base.publishing.public_requires_gate && !worker.publishing.public_requires_gate {
-        return Err("worker cannot remove the public publication gate".into());
-    }
-    if base.publishing.default_visibility == "private"
-        && worker.publishing.default_visibility == "public"
-    {
-        return Err("worker cannot broaden default publication visibility".into());
-    }
     Ok(())
 }
 
@@ -185,11 +96,9 @@ mod tests {
         let base = StoragePolicy::default();
         let mut worker = base.clone();
         worker.knowledge.max_repo_bytes -= 1;
-        worker.scratch.max_files -= 1;
-        worker.publishing.allowed_media_types = vec!["text/markdown".into()];
         assert!(validate_worker_overlay(&base, &worker).is_ok());
 
-        worker.scratch.max_bytes = base.scratch.max_bytes + 1;
+        worker.knowledge.max_repo_bytes = base.knowledge.max_repo_bytes + 1;
         assert!(validate_worker_overlay(&base, &worker).is_err());
     }
 }

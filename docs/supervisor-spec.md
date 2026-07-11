@@ -188,7 +188,7 @@ tasks; they never work inline (§3.5):
    concurrency; each run its own container, identity token, and worktree.
 
 **8. Working-copy flow (code tasks).** Today the box gets the repo read-only plus
-an empty scratch workspace — fine for research, not for code. For a code task the
+an empty temporary workspace — fine for research, not for code. For a code task the
 supervisor provisions a writable **git worktree** at a base ref
 (`runs/<id>/worktree`), mounts it read-write, and the box commits to
 `worker/<name>/<task>`. `commit_and_push` / `open_pr` are gated intents; the diff

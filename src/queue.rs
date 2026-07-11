@@ -34,7 +34,7 @@ pub struct Task {
     #[serde(default)]
     pub context: Value,
     /// Code task: the git repo to branch a writable worktree from, and the base
-    /// ref. Absent → a research task (read-only repo + scratch workspace).
+    /// ref. Absent → a research task (read-only repo + container temp space).
     #[serde(default)]
     pub repo: Option<String>,
     #[serde(default)]

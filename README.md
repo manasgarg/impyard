@@ -25,11 +25,10 @@ schedule triggers, continuations, and the code-task worktree→gated-PR flow
 sessions, per-channel purpose and behavior controls, and scoped worker/channel/
 user memory with governed writes, bounded recall, participant correction, and
 owner inspection (see `docs/memory-spec.md`). Workers also receive isolated
-Git-backed world knowledge and per-run scratch space; valid append-only notes are
-committed by the host on clean exit. Governed exact-byte downloads land in
-scratch with durable URL, media type, size, and SHA-256 receipts (see
-`docs/knowledge-repo-spec.md`). Workers can publish exact frozen bytes into a
-local immutable, versioned blob store; public visibility requires approval.
+Git-backed world knowledge; valid append-only notes are committed by the host on
+clean exit. Disposable downloads and working files use a private, bounded
+container `/tmp` that disappears with the container (see
+`docs/knowledge-repo-spec.md`).
 
 ## Toolchain
 
@@ -86,7 +85,6 @@ roster runs ls                            # all executions, including Discord se
 roster runs show <run-id>                 # metadata, conversation, journal, memory, files
 roster knowledge yuko                     # print the worker's bare Git repository path
 git -C "$(roster knowledge yuko)" log      # use normal Git commands after discovery
-roster blobs ls --worker yuko              # inspect immutable published blobs
 roster queue add --worker yuko --reorganize "rebuild the topic organization"
 ```
 

@@ -174,8 +174,6 @@ fn storage_policy(value: &toml::Value, base: Option<&StoragePolicy>) -> Result<S
     let mut merged = serde_json::to_value(base.cloned().unwrap_or_default())?;
     let overlay = json!({
         "knowledge": value.get("knowledge").map(to_json).unwrap_or(json!({})),
-        "scratch": value.get("scratch").map(to_json).unwrap_or(json!({})),
-        "publishing": value.get("publishing").map(to_json).unwrap_or(json!({})),
     });
     merge_json(&mut merged, overlay);
     let policy: StoragePolicy = serde_json::from_value(merged)

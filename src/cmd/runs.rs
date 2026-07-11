@@ -116,18 +116,6 @@ fn show(args: &[String]) -> Result<(), BErr> {
                 println!("  error   {}", runlog::one_line(error, 200));
             }
         }
-        if let Some(scratch) = &record.scratch {
-            println!("scratch   {}", scratch.state);
-            if let Some(error) = &scratch.error {
-                println!("  error   {}", runlog::one_line(error, 200));
-            }
-        }
-        if !record.fetch_receipts.is_empty() {
-            println!("fetches   {}", record.fetch_receipts.join(", "));
-        }
-        if !record.published_blobs.is_empty() {
-            println!("blobs     {}", record.published_blobs.join(", "));
-        }
     }
     println!("path      {}", run.run_dir.display());
 
