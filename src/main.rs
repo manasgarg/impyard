@@ -23,6 +23,7 @@ mod ledger;
 mod memory;
 mod providers;
 mod proxy;
+mod publish;
 mod queue;
 mod registry;
 mod runlog;
@@ -54,6 +55,7 @@ async fn main() {
         "connect" => cmd::connect::run(&args[2..]).await,
         "vault-sync" => cmd::vault_sync::run(),
         "box" => cmd::run_box::run(&args[2..]).await,
+        "blobs" => cmd::blobs::run(&args[2..]),
         "gates" => cmd::gates::run(&args[2..]).await,
         "queue" => cmd::queue::run(&args[2..]),
         "supervise" => cmd::supervise::run(&args[2..]).await,
@@ -128,6 +130,7 @@ fn print_help() {
            channel [ls|trust|mode|memory]  manage channel behavior\n  \
            memory [ls|show|rm|correct|pin|explain] inspect and repair interaction memory\n  \
            knowledge <worker>           print the worker's Git repository path\n  \
+           blobs [ls|show|path]          inspect immutable published blobs\n  \
            runs [ls|show|context]      inspect executions and exact compiled context\n  \
            gates [ls|show|approve|deny] approval desk for proposed actions\n\
          {providers}\n  \

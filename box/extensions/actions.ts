@@ -82,6 +82,41 @@ export default function rosterActionTools(api: PiToolApi): void {
   });
 
   api.registerTool({
+    name: "publish_blob",
+    label: "publish_blob",
+    description:
+      "Publish a finished file from this run's scratch or knowledge checkout into the immutable blob store. " +
+      "The trusted host freezes and hashes the exact bytes before any approval. Private publication normally runs " +
+      "immediately; public publication normally waits for owner approval.",
+    promptSnippet: "publish_blob(path, logical_name, media_type, visibility, rationale, note_ids?): publish immutable bytes",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Absolute source under /opt/roster/scratch or /opt/roster/knowledge.",
+        },
+        logical_name: { type: "string", description: "Stable human-readable document name." },
+        media_type: { type: "string", description: "Document media type, such as text/markdown or application/pdf." },
+        visibility: { type: "string", enum: ["private", "public"] },
+        rationale: { type: "string", description: "Why this document should be published." },
+        note_ids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional stable knowledge note IDs supporting this document.",
+        },
+      },
+      required: ["path", "logical_name", "media_type", "rationale"],
+      additionalProperties: false,
+    },
+    async execute(_id, params) {
+      const { rationale, ...payload } = params as { rationale: string } & Record<string, unknown>;
+      const s = await submit("publish-blob", payload, rationale);
+      return { content: [{ type: "text", text: describe(s) }] };
+    },
+  });
+
+  api.registerTool({
     name: "message_user",
     label: "message_user",
     description:

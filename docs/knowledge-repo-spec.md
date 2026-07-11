@@ -3,9 +3,10 @@
 **Status: partially implemented.** Repository isolation, append-mode validation,
 serialized integration, clean-exit checkpoints, crash quarantine, scratch
 cleanup, compiled storage policy, run history, basic owner inspection, and
-exclusive reorganization jobs, and governed download receipts are built.
-Publication, mid-run checkpoints, hard quotas for non-tool scratch writes, and
-operational repair commands remain to be implemented.
+exclusive reorganization jobs, governed download receipts, and the immutable
+local publication blob store are built. External public delivery, mid-run
+checkpoints, hard quotas for non-tool scratch writes, and operational repair
+commands remain to be implemented.
 This document defines the complete target.
 
 ## Outcome
@@ -450,20 +451,27 @@ On approval, the host copies the exact reviewed bytes into the blob store. Blobs
 are immutable and content-addressed. Publishing a new version creates a new blob
 rather than overwriting old bytes.
 
+Before either automatic execution or gate creation, the trusted host freezes the
+candidate file into host-only staging and derives its hash, size, and detected
+policy facts. A gate therefore reviews metadata for exact bytes that the worker
+can no longer change. Denial removes the staged bytes. A failed gated execution
+may be retried idempotently with the same publication ID.
+
 ```json
 {
   "kind": "publish-completed",
   "ts": "2026-07-11T12:30:00Z",
   "worker": "yuko",
   "run_id": "2026-07-11-12-00-00-abcd",
-  "blob_id": "blob_01JPUB",
+  "publication_id": "pub_01JPUB",
+  "blob_id": "blob_<sha256>",
   "sha256": "...",
   "bytes": 91234,
   "media_type": "application/pdf",
   "logical_name": "vendor-sso-report",
   "version": 3,
   "visibility": "public",
-  "url": "https://...",
+  "uri": "roster-blob://blob_<sha256>",
   "knowledge_commit": "def456...",
   "note_ids": ["n_01JABC", "n_01JDEF"]
 }
@@ -471,6 +479,12 @@ rather than overwriting old bytes.
 
 Mutable logical names or `latest` aliases are metadata pointers, not mutable blob
 contents. Updating an alias is a separate governed operation.
+
+The first implementation is a durable local blob store. `public` visibility
+requires approval and records publication intent, but does not create an
+Internet-accessible URL. An external delivery adapter can later translate an
+approved local blob into a public destination without changing the immutable
+blob or its reviewed hash.
 
 After publishing, the worker may add a note that links to the blob. Publication
 remains durable even if the later notes commit fails; the journal is the recovery
@@ -574,7 +588,8 @@ systems such as the publication blob store.
 
 ```text
 roster blobs ls [--worker <worker>]
-roster blobs show <blob-id>
+roster blobs show <blob-or-publication-id>
+roster blobs path <blob-id>
 ```
 
 `roster runs show` should display the knowledge base commit, write mode, produced
@@ -645,7 +660,7 @@ surface do not drift:
 - Journal governed fetch receipts with hashes and transient pointers.
 - Delete scratch on clean exit and retry cleanup after crashes.
 
-### 4. Governed publication
+### 4. Governed publication — local immutable store built; external delivery pending
 
 - Add immutable blob storage and policy evaluation.
 - Freeze reviewed bytes across a gate decision.

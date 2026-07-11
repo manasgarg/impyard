@@ -125,6 +125,9 @@ fn show(args: &[String]) -> Result<(), BErr> {
         if !record.fetch_receipts.is_empty() {
             println!("fetches   {}", record.fetch_receipts.join(", "));
         }
+        if !record.published_blobs.is_empty() {
+            println!("blobs     {}", record.published_blobs.join(", "));
+        }
     }
     println!("path      {}", run.run_dir.display());
 

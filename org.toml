@@ -80,6 +80,14 @@ name = "fetch-to-scratch"
 executor = "fetch"
 trust = "auto"
 
+# Freeze exact run bytes before policy evaluation. Private blobs publish
+# automatically; public visibility is raised to a gate by publishing policy.
+[[action]]
+name = "publish-blob"
+executor = "publish"
+trust = "auto"
+wake_on_resolve = true
+
 # Scoped interaction memory. The note executor applies its own scope/actor checks and may
 # raise worker-wide or inferred writes to a gate regardless of this base trust.
 [[action]]

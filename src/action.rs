@@ -125,7 +125,7 @@ pub async fn handle_action(worker: &str, trusted_run_id: &str, method: &str, pat
 /// Handle one action envelope: attribute, authorize, and either execute now or
 /// file a gate.
 async fn submit(worker: &str, trusted_run_id: &str, body: &[u8]) -> Response<Body> {
-    let env: Envelope = match serde_json::from_slice(body) {
+    let mut env: Envelope = match serde_json::from_slice(body) {
         Ok(e) => e,
         Err(e) => return reply(StatusCode::BAD_REQUEST, json!({ "status": "error", "error": format!("bad envelope: {e}") })),
     };
@@ -137,16 +137,37 @@ async fn submit(worker: &str, trusted_run_id: &str, body: &[u8]) -> Response<Bod
         return reply(StatusCode::FORBIDDEN, json!({ "status": "denied", "reason": format!("no action grant for \"{}\"", env.intent) }));
     };
     let grant = grant.clone();
-    if matches!(grant.executor.as_str(), "note" | "fetch") && trusted_run_id.is_empty() {
+    if matches!(grant.executor.as_str(), "note" | "fetch" | "publish") && trusted_run_id.is_empty() {
         journal::append(worker, &run_id, "action-refused", json!({ "intent": env.intent, "reason": "run-scoped action has no trusted run context" }));
         audit(worker, &env.intent, "refused", None, None);
         return reply(StatusCode::FORBIDDEN, json!({ "status": "denied", "reason": "run-scoped action has no trusted run context" }));
     }
 
+    if grant.executor == "publish" {
+        match crate::publish::freeze(worker, &run_id, &env.payload) {
+            Ok(payload) => env.payload = payload,
+            Err(reason) => {
+                journal::append(worker, &run_id, "action-refused", json!({ "intent": env.intent, "reason": reason }));
+                audit(worker, &env.intent, "refused", None, None);
+                return reply(StatusCode::FORBIDDEN, json!({ "status": "denied", "reason": reason }));
+            }
+        }
+    }
+
     journal::append(worker, &run_id, "action-proposed", json!({ "intent": env.intent, "rationale": env.rationale, "run_id": run_id }));
 
     let (executed, denied) = gate::history(worker, &env.intent);
-    let level = if grant.executor == "note" {
+    let level = if grant.executor == "publish" {
+        match crate::publish::trust_level(worker, &env.payload, &grant.trust) {
+            Ok(level) => level,
+            Err(reason) => {
+                crate::publish::discard_staging(&env.payload);
+                journal::append(worker, &run_id, "action-refused", json!({ "intent": env.intent, "reason": reason }));
+                audit(worker, &env.intent, "refused", None, None);
+                return reply(StatusCode::FORBIDDEN, json!({ "status": "denied", "reason": reason }));
+            }
+        }
+    } else if grant.executor == "note" {
         let context = crate::memory::load_run_context(&run_id);
         match crate::memory::action_trust(worker, &env.intent, &env.payload, &context) {
             Ok(level) => level.to_string(),
@@ -175,6 +196,9 @@ async fn submit(worker: &str, trusted_run_id: &str, body: &[u8]) -> Response<Bod
                 reply(StatusCode::OK, json!({ "status": "done", "result": result }))
             }
             Err(e) => {
+                if grant.executor == "publish" {
+                    crate::publish::discard_staging(&env.payload);
+                }
                 journal::append(worker, &run_id, "failed", json!({ "intent": env.intent, "auto": true, "error": e }));
                 audit(worker, &env.intent, "failed", None, None);
                 reply(StatusCode::OK, json!({ "status": "error", "error": e }))
@@ -200,6 +224,9 @@ async fn submit(worker: &str, trusted_run_id: &str, body: &[u8]) -> Response<Bod
             error: None,
         };
         if let Err(e) = gate::save(&g) {
+            if grant.executor == "publish" {
+                crate::publish::discard_staging(&env.payload);
+            }
             return reply(StatusCode::INTERNAL_SERVER_ERROR, json!({ "status": "error", "error": format!("could not file gate: {e}") }));
         }
         journal::append(worker, &run_id, "gate-filed", json!({ "gate_id": g.id, "intent": env.intent, "rationale": env.rationale }));
@@ -262,6 +289,9 @@ pub fn deny_gate(id: &str, decided_by: &str, note: Option<&str>) -> Result<Gate,
     g.decided_at = Some(now_rfc3339());
     g.decision_note = note.map(String::from);
     gate::save(&g).map_err(|e| e.to_string())?;
+    if g.executor == "publish" {
+        crate::publish::discard_staging(&g.payload);
+    }
     journal::append(&g.worker, &g.run_id, "denied", json!({ "gate_id": g.id, "by": decided_by, "note": note }));
     audit(&g.worker, &g.intent, "denied", Some(&g.id), None);
     resolve_followup(&g);
@@ -316,6 +346,7 @@ pub async fn run_executor(executor: &str, worker: &str, intent: &str, payload: &
         "purpose" => exec_purpose(payload),
         "discord" => exec_discord(worker, payload).await,
         "fetch" => crate::fetch::execute(worker, run_id, payload).await,
+        "publish" => crate::publish::execute(worker, run_id, payload),
         "note" => crate::memory::execute(worker, intent, payload, run_id),
         other => Err(format!("no executor \"{other}\" for intent \"{intent}\"")),
     }
