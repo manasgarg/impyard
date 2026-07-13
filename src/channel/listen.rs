@@ -5,13 +5,30 @@
 
 use crate::channel::discord;
 use crate::paths;
-use crate::util::now_rfc3339;
+use crate::util::{now_rfc3339, BErr};
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-type BErr = Box<dyn std::error::Error>;
+/// (worker, vault credential) pairs — straight from live config.
+pub fn plan() -> Vec<(String, String)> {
+    crate::config::snapshot().map(|c| c.listeners.clone()).unwrap_or_default()
+}
+
+/// Run one worker's listener forever, restarting with backoff. An exit or an
+/// error never takes the gateway or dispatch down with it.
+pub async fn supervised(worker: String, credential: String) {
+    let mut backoff = 5u64;
+    loop {
+        match listen_worker(&worker, &credential).await {
+            Ok(()) => eprintln!("listener {worker}: disconnected; reconnecting in {backoff}s"),
+            Err(e) => eprintln!("listener {worker}: {e}; retrying in {backoff}s"),
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
+        backoff = (backoff * 2).min(300);
+    }
+}
 
 /// Run the inbound Discord gateway for one worker until it exits. The lock
 /// guarantees one listener per worker across processes (a second `server start`

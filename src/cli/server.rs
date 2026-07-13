@@ -1,26 +1,17 @@
-//! `roster server start` — the one daemon: the governed-egress gateway, the
-//! task-dispatch loop, and the channel listeners, supervised siblings in one
-//! process (one thing to start, one thing to restart after a rebuild). And
-//! `roster server status` — health, computed, never model-written.
+//! `roster server start` — the composition root of the one daemon: bring up
+//! the governed-egress gateway, the channel listeners, and the task-dispatch
+//! loop as supervised siblings in one process (one thing to start, one thing
+//! to restart after a rebuild). The machinery lives in its blocks; this file
+//! only wires it. And `roster server status` — health, computed, never
+//! model-written.
 
-use crate::util::BErr;
-use crate::gateway::ca::Ca;
-use crate::gateway::budget;
 use crate::action::gate;
-use crate::gateway::ledger;
-use crate::gateway::proxy;
+use crate::util::BErr;
 use crate::work::queue;
-use crate::gateway::tls;
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::TcpListener;
 
 const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("ROSTER_BUILD"), ")");
-
-/// The gateway's well-known port — what boxes are pointed at via HTTP(S)_PROXY
-/// and what `status` probes. `--addr` overrides where `run` binds.
-const GATEWAY_PORT: u16 = 7300;
 
 pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<(), BErr> {
     // Refuse to boot on broken config — better loud at start than silently
@@ -33,51 +24,23 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<
         return Err(format!("invalid config ({} error(s)) — fix and retry, or: roster server validate", errors.len()).into());
     }
 
-    rustls::crypto::ring::default_provider().install_default().ok();
-
-    let ca = Arc::new(Ca::ensure()?);
-    let tls = tls::acceptor(ca.clone());
-    let client = proxy::build_client();
-
-    // Rebuild budget counters from the current window's usage so a restart
-    // doesn't reset budgets.
-    ledger::rehydrate(&budget::load_budget().limits);
-
-    let listener = TcpListener::bind(addr).await?;
+    let gateway = crate::gateway::start(addr).await?;
     eprintln!(
         "roster server {BUILD} — gateway on {addr}; dispatch cap {cap}{}{}",
         if once { "; once" } else { "" },
         if no_listen { "; listeners off" } else { "" }
     );
 
-    // The gateway: accept loop, one task per connection. An accept error is
-    // logged and retried — it must never take the daemon down.
-    let gateway = tokio::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((stream, _peer)) => {
-                    let (tls, client, ca) = (tls.clone(), client.clone(), ca.clone());
-                    tokio::spawn(proxy::serve(stream, tls, client, ca));
-                }
-                Err(e) => {
-                    eprintln!("gateway: accept failed: {e}; retrying");
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                }
-            }
-        }
-    });
-
-    // Channel listeners: one per worker that declares one ([channels] in its
-    // spec, compiled at deploy). Each is supervised — an exit or error restarts
-    // it with backoff and never takes the gateway or dispatch down with it.
+    // Channel listeners: one supervised task per worker that declares one
+    // ([channels] in its spec).
     let mut listeners = Vec::new();
     if !no_listen && !once {
-        let plan = listener_plan();
+        let plan = crate::channel::listen::plan();
         if plan.is_empty() {
             eprintln!("listeners: none configured (a worker opts in via [channels] in its worker.toml)");
         }
         for (worker, credential) in plan {
-            listeners.push(tokio::spawn(supervise_listener(worker, credential)));
+            listeners.push(tokio::spawn(crate::channel::listen::supervised(worker, credential)));
         }
     }
 
@@ -89,11 +52,6 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<
         l.abort();
     }
     result
-}
-
-/// (worker, vault credential) pairs — straight from live config.
-fn listener_plan() -> Vec<(String, String)> {
-    crate::config::snapshot().map(|c| c.listeners.clone()).unwrap_or_default()
 }
 
 /// `roster server validate` — parse everything, print every error.
@@ -129,23 +87,11 @@ pub fn validate() -> Result<(), BErr> {
     }
 }
 
-async fn supervise_listener(worker: String, credential: String) {
-    let mut backoff = 5u64;
-    loop {
-        match crate::channel::listen::listen_worker(&worker, &credential).await {
-            Ok(()) => eprintln!("listener {worker}: disconnected; reconnecting in {backoff}s"),
-            Err(e) => eprintln!("listener {worker}: {e}; retrying in {backoff}s"),
-        }
-        tokio::time::sleep(Duration::from_secs(backoff)).await;
-        backoff = (backoff * 2).min(300);
-    }
-}
-
 pub async fn status(json: bool) -> Result<(), BErr> {
     // Is a gateway answering on the well-known port?
     let gateway_up = tokio::time::timeout(
         Duration::from_millis(500),
-        tokio::net::TcpStream::connect(("127.0.0.1", GATEWAY_PORT)),
+        tokio::net::TcpStream::connect(("127.0.0.1", crate::gateway::PORT)),
     )
     .await
     .map(|r| r.is_ok())
@@ -167,7 +113,7 @@ pub async fn status(json: bool) -> Result<(), BErr> {
     if json {
         let out = serde_json::json!({
             "build": BUILD,
-            "gateway": { "port": GATEWAY_PORT, "up": gateway_up },
+            "gateway": { "port": crate::gateway::PORT, "up": gateway_up },
             "config": config,
             "queue": queue_by_state,
             "gates_pending": gates_pending,
@@ -179,13 +125,14 @@ pub async fn status(json: bool) -> Result<(), BErr> {
         return Ok(());
     }
 
+    let port = crate::gateway::PORT;
     println!("roster {BUILD}");
     println!(
         "gateway    {}",
         if gateway_up {
-            format!("up on :{GATEWAY_PORT}")
+            format!("up on :{port}")
         } else {
-            format!("DOWN (nothing on :{GATEWAY_PORT}) — run: roster server start")
+            format!("DOWN (nothing on :{port}) — run: roster server start")
         }
     );
     println!("config     {config}");
