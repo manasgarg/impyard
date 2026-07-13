@@ -27,12 +27,12 @@ pub async fn connect(
     // Channel providers are host-consumed infrastructure, not connections:
     // the credential never enters a box. Vault step + the binding pointer.
     let auth = p.get("auth").and_then(Value::as_str).unwrap_or("");
-    if matches!(auth, "discord" | "smtp") {
+    if matches!(auth, "discord" | "smtp" | "slack") {
         let cred = crate::credential::connect::login(&service, &p).await?;
         crate::credential::connect::store(&service, &cred)?;
         println!("\nconnected: \"{service}\" credential in the vault (channel infrastructure — never exposed to boxes)");
-        if auth == "discord" {
-            println!("bind a worker to it: [channels] discord = \"{service}\" in workers/<name>/worker.toml");
+        if matches!(auth, "discord" | "slack") {
+            println!("bind a worker to it: [channels] {auth} = \"{service}\" in workers/<name>/worker.toml");
         }
         return Ok(());
     }
@@ -170,9 +170,9 @@ fn catalog(registry: &serde_json::Map<String, Value>) -> Result<(), BErr> {
         let hosts: Vec<&str> = meta["hosts"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
         println!("  {n:width$}  {} → {}", hosts.join(", "), meta["env"].as_str().unwrap_or("?"));
     }
-    println!("\nChannels (discord, smtp) stay infrastructure: roster server vault connect <provider>,");
-    println!("then bind in worker.toml. Custom services: add [<name>] with auth/inject and a");
-    println!("connection block to providers.toml — connect picks it up.");
+    println!("\nChannels (discord, slack, smtp) stay infrastructure: roster server vault connect");
+    println!("<provider>, then bind in worker.toml. Custom services: add [<name>] with auth/inject");
+    println!("and a connection block to providers.toml — connect picks it up.");
     Ok(())
 }
 

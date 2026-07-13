@@ -279,6 +279,31 @@ export default function rosterActionTools(api: PiToolApi): void {
   });
 
   api.registerTool({
+    name: "slack_send",
+    label: "slack_send",
+    description:
+      "Reply in a Slack channel. This does NOT send immediately — it submits the message for governance " +
+      "(it may send automatically or wait for approval). Write in Slack mrkdwn (*bold*, _italic_, <url|label>), " +
+      "not Markdown. Provide the channel id and the message text; thread_ts replies inside a thread.",
+    promptSnippet: "slack_send(channel_id, text[, thread_ts]): reply in a Slack channel (governed)",
+    parameters: {
+      type: "object",
+      properties: {
+        channel_id: { type: "string", description: "The Slack channel id to post in." },
+        text: { type: "string", description: "The message to send, in Slack mrkdwn." },
+        thread_ts: { type: "string", description: "Optional thread timestamp to reply inside a thread." },
+      },
+      required: ["channel_id", "text"],
+      additionalProperties: false,
+    },
+    async execute(_id, params) {
+      const { channel_id, text, thread_ts } = params as { channel_id: string; text: string; thread_ts?: string };
+      const s = await submit("slack-send", { channel_id, text, thread_ts }, "");
+      return { content: [{ type: "text", text: describe(s) }] };
+    },
+  });
+
+  api.registerTool({
     name: "check_gates",
     label: "check_gates",
     description:

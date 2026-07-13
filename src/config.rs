@@ -56,8 +56,9 @@ pub struct Loaded {
     pub memory: CompiledMemoryPolicy,
     pub context: CompiledContextPolicy,
     pub storage: CompiledStoragePolicy,
-    /// (worker, vault credential) — `server start` starts one listener each.
-    pub listeners: Vec<(String, String)>,
+    /// (worker, platform, vault credential) — `server start` starts one
+    /// listener each. Platforms: "discord", "slack".
+    pub listeners: Vec<(String, String, String)>,
     /// `[[expose]]` — env vars set in the box to the sentinel; the gateway's
     /// per-grant injection swaps in the real credential in transit, only on
     /// requests the grant's scope allows. Leaking the box env leaks nothing.
@@ -93,7 +94,7 @@ pub fn load() -> Result<Loaded, Vec<String>> {
     let mut actions: Vec<Value> = Vec::new();
     let mut trust: Vec<Value> = Vec::new();
     let mut triggers: Vec<Value> = Vec::new();
-    let mut listeners: Vec<(String, String)> = Vec::new();
+    let mut listeners: Vec<(String, String, String)> = Vec::new();
     let mut exposes: Vec<Expose> = Vec::new();
     let mut workers: Vec<String> = Vec::new();
 
@@ -210,20 +211,23 @@ pub fn load() -> Result<Loaded, Vec<String>> {
             for e in array(&w, "expose") {
                 parse_expose(e, &scope, &name, &mut exposes, &mut errors);
             }
-            // [channels] — which vault credential this worker's inbound edge
-            // uses. Two workers on one credential would double-file every
-            // message, so that is a validation error, not a runtime surprise.
-            if let Some(credential) = w
-                .get("channels")
-                .and_then(|c| c.get("discord"))
-                .and_then(|v| v.as_str())
-            {
-                if let Some((taken, _)) = listeners.iter().find(|(_, c)| c == credential) {
-                    errors.push(format!(
-                        "workers {taken} and {name} both listen with credential \"{credential}\" — one bot cannot serve two workers"
-                    ));
-                } else {
-                    listeners.push((name.clone(), credential.to_string()));
+            // [channels] — which vault credential each of this worker's
+            // inbound edges uses. Two listeners on one credential would
+            // double-file every message, so that is a validation error, not a
+            // runtime surprise.
+            for platform in ["discord", "slack"] {
+                if let Some(credential) = w
+                    .get("channels")
+                    .and_then(|c| c.get(platform))
+                    .and_then(|v| v.as_str())
+                {
+                    if let Some((taken, _, _)) = listeners.iter().find(|(_, _, c)| c == credential) {
+                        errors.push(format!(
+                            "workers {taken} and {name} both listen with credential \"{credential}\" — one bot cannot serve two listeners"
+                        ));
+                    } else {
+                        listeners.push((name.clone(), platform.to_string(), credential.to_string()));
+                    }
                 }
             }
         }

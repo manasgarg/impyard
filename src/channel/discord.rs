@@ -933,7 +933,7 @@ pub fn purpose_path(channel_id: &str) -> PathBuf {
     channel_dir(channel_id).join("purpose.md")
 }
 
-fn persist_message(channel_id: &str, record: &Value) {
+pub(crate) fn persist_message(channel_id: &str, record: &Value) {
     let dir = channel_dir(channel_id);
     let _ = std::fs::create_dir_all(&dir);
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("messages.jsonl")) {
@@ -944,7 +944,7 @@ fn persist_message(channel_id: &str, record: &Value) {
 
 /// Distinct human authors seen in a channel's history (bots aren't persisted),
 /// to tell a 1:1 conversation from a group one.
-fn distinct_human_authors(channel_id: &str) -> usize {
+pub(crate) fn distinct_human_authors(channel_id: &str) -> usize {
     use std::collections::HashSet;
     recent_messages(channel_id, 500)
         .iter()

@@ -45,8 +45,8 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<
         if plan.is_empty() {
             eprintln!("listeners: none configured (a worker opts in via [channels] in its worker.toml)");
         }
-        for (worker, credential) in plan {
-            listeners.push(tokio::spawn(crate::channel::listen::supervised(worker, credential)));
+        for (worker, platform, credential) in plan {
+            listeners.push(tokio::spawn(crate::channel::listen::supervised(worker, platform, credential)));
         }
     }
 

@@ -61,9 +61,10 @@ active/DISABLED.
 
 ## The catalog
 
-Ships in the binary's provider registry: github, gitlab, slack, notion,
+Ships in the binary's provider registry: github, gitlab, slack-api, notion,
 linear — each with auth kind, inject template, canonical hosts, and the
-conventional env var. Custom services need three lines in providers.toml, then
+conventional env var. (`slack` is the *channel* provider — see
+docs/slack-channel.md.) Custom services need three lines in providers.toml, then
 `connect` treats them like catalog entries:
 
 ```toml

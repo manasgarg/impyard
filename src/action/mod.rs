@@ -83,8 +83,9 @@ fn grant_for<'a>(policy: &'a ActionPolicy, worker: &str, intent: &str) -> Option
     policy.actions.iter().find(|a| crate::gateway::scope::applies(&a.scope, worker) && a.name == intent)
 }
 
-/// Is a discord-send payload targeting a channel an admin marked trusted?
-fn discord_channel_trusted(payload: &Value) -> bool {
+/// Is a channel-send payload targeting a channel an admin marked trusted?
+/// (The trust store is channel-id keyed and platform-agnostic.)
+fn channel_payload_trusted(payload: &Value) -> bool {
     payload.get("channel_id").and_then(|v| v.as_str()).map(crate::channel::discord::channel_trusted).unwrap_or(false)
 }
 
@@ -160,7 +161,9 @@ async fn submit(worker: &str, trusted_run_id: &str, body: &[u8]) -> Response<Bod
     } else if grant.executor == "identity" {
         // Identity is worker-wide — always hard-gated (D10).
         "gate".to_string()
-    } else if (grant.executor == "discord" || grant.executor == "purpose") && discord_channel_trusted(&env.payload) {
+    } else if (grant.executor == "discord" || grant.executor == "slack" || grant.executor == "purpose")
+        && channel_payload_trusted(&env.payload)
+    {
         // Replies AND channel-purpose refinements flow without a gate in a trusted
         // channel — its participants are authorized to set the purpose (they could
         // `/purpose set` directly). Untrusted channels still gate for review.
@@ -316,6 +319,7 @@ pub async fn run_executor(executor: &str, worker: &str, intent: &str, payload: &
         "identity" => exec_identity(worker, payload),
         "purpose" => exec_purpose(payload),
         "discord" => exec_discord(worker, payload).await,
+        "slack" => exec_slack(worker, payload).await,
         "note" => crate::worker::memory::execute(worker, intent, payload, run_id),
         other => Err(format!("no executor \"{other}\" for intent \"{intent}\"")),
     }
@@ -337,9 +341,26 @@ async fn exec_message_user(worker: &str, payload: &Value) -> Result<Value, Strin
                         eprintln!("message-user [{worker}] → lead DM");
                         return Ok(json!({ "delivered": "discord-dm" }));
                     }
-                    Err(e) => eprintln!("message-user: DM post failed ({e}); using inbox"),
+                    Err(e) => eprintln!("message-user: DM post failed ({e}); trying other channels"),
                 },
-                Err(e) => eprintln!("message-user: open DM failed ({e}); using inbox"),
+                Err(e) => eprintln!("message-user: open DM failed ({e}); trying other channels"),
+            }
+        }
+    }
+
+    if let Some(cred) = crate::credential::vault::get_credential(&slack_credential_name(worker)) {
+        let token = cred.get("bot_token").and_then(|v| v.as_str());
+        let owner = cred.get("owner_id").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+        if let (Some(token), Some(owner)) = (token, owner) {
+            match crate::channel::slack::open_dm(token, owner).await {
+                Ok(dm) => match crate::channel::slack::post_message(token, &dm, text, None).await {
+                    Ok(_) => {
+                        eprintln!("message-user [{worker}] → lead Slack DM");
+                        return Ok(json!({ "delivered": "slack-dm" }));
+                    }
+                    Err(e) => eprintln!("message-user: Slack DM post failed ({e}); using inbox"),
+                },
+                Err(e) => eprintln!("message-user: Slack open DM failed ({e}); using inbox"),
             }
         }
     }
@@ -369,6 +390,38 @@ async fn exec_discord(worker: &str, payload: &Value) -> Result<Value, String> {
     let id = crate::channel::discord::post_message(token, channel, text).await?;
     eprintln!("discord [{worker}] → channel {channel}");
     Ok(json!({ "sent": true, "channel_id": channel, "message_id": id }))
+}
+
+/// The worker's Slack credential: its `[channels] slack` binding from live
+/// config, falling back to a credential literally named "slack".
+fn slack_credential_name(worker: &str) -> String {
+    let short = crate::paths::short_worker(worker).to_string();
+    crate::config::snapshot()
+        .ok()
+        .and_then(|c| {
+            c.listeners
+                .iter()
+                .find(|(w, platform, _)| *w == short && platform == "slack")
+                .map(|(_, _, credential)| credential.clone())
+        })
+        .unwrap_or_else(|| "slack".to_string())
+}
+
+async fn exec_slack(worker: &str, payload: &Value) -> Result<Value, String> {
+    let channel = payload.get("channel_id").and_then(|v| v.as_str()).ok_or("slack-send needs a \"channel_id\"")?;
+    let text = payload
+        .get("text")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or("slack-send needs non-empty \"text\"")?;
+    let thread_ts = payload.get("thread_ts").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+    let name = slack_credential_name(worker);
+    let cred = crate::credential::vault::get_credential(&name)
+        .ok_or_else(|| format!("no \"{name}\" credential — run: roster server vault connect slack"))?;
+    let token = cred.get("bot_token").and_then(|v| v.as_str()).ok_or("slack credential has no bot_token")?;
+    let ts = crate::channel::slack::post_message(token, channel, text, thread_ts).await?;
+    eprintln!("slack [{worker}] → channel {channel}");
+    Ok(json!({ "sent": true, "channel_id": channel, "message_ts": ts }))
 }
 
 /// Send an email. If an SMTP credential is configured in the vault

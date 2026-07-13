@@ -32,6 +32,7 @@ pub fn provider_help() -> String {
             Some("api_key") => "prompts you to paste an API key",
             Some("smtp") => "prompts for SMTP host, port, username, password (e.g. Mailgun)",
             Some("discord") => "prompts for a bot token and, optionally, your Discord user id",
+            Some("slack") => "prompts for a bot token (xoxb-) and a Socket Mode app token (xapp-)",
             Some("oauth") => match p["login"]["flow"].as_str() {
                 Some("device_code") => "device-code login: open a URL, enter the shown code, approve",
                 Some("pkce") => "browser login: open the printed URL, authorize, paste the code back",
@@ -73,6 +74,7 @@ pub async fn login(provider_name: &str, p: &Value) -> Result<Value, BErr> {
         Some("api_key") => connect_api_key(),
         Some("smtp") => connect_smtp(),
         Some("discord") => connect_discord(),
+        Some("slack") => connect_slack(),
         Some("oauth") => {
             let login = p.get("login").cloned().unwrap_or_else(|| json!({}));
             match login.get("flow").and_then(|v| v.as_str()) {
@@ -139,6 +141,24 @@ fn connect_discord() -> Result<Value, BErr> {
     }
     let owner_id = prompt("Owner Discord user id (for DMs; optional): ")?;
     Ok(json!({ "type": "discord", "token": token, "owner_id": owner_id }))
+}
+
+/// Slack channel credential: the bot token does the talking (Web API), the
+/// app-level token opens the Socket Mode websocket. Both stay host-side.
+fn connect_slack() -> Result<Value, BErr> {
+    let bot_token = prompt_hidden("Slack bot token (xoxb-…): ")?;
+    if bot_token.is_empty() {
+        return Err("no bot token entered".into());
+    }
+    if !bot_token.starts_with("xoxb-") {
+        eprintln!("note: bot tokens usually start with xoxb-");
+    }
+    let app_token = prompt_hidden("Slack app-level token (xapp-…, scope connections:write): ")?;
+    if app_token.is_empty() {
+        return Err("no app-level token entered — Socket Mode needs one (app settings → Basic Information → App-Level Tokens)".into());
+    }
+    let owner_id = prompt("Your lead's Slack member id (for DMs; optional): ")?;
+    Ok(json!({ "type": "slack", "bot_token": bot_token, "app_token": app_token, "owner_id": owner_id }))
 }
 
 // ── OAuth device-code ────────────────────────────────────────────────────────
