@@ -213,14 +213,24 @@ fn resolve_identity(proxy_auth: Option<&hyper::header::HeaderValue>) -> (String,
         .unwrap_or_else(default)
 }
 
+/// A policy denial a CLI can read: the status line carries the verdict and
+/// rule in headers (for clients that print nothing else), the body carries
+/// them again plus a hint that this is governance, not an outage.
 fn deny_response(verdict: Verdict, rule: Option<&str>) -> Response<Body> {
     let rule_json = rule.map(|r| format!("\"{r}\"")).unwrap_or_else(|| "null".into());
     let mut resp = Response::new(full(&format!(
-        "{{\"error\":\"denied by gateway ({})\",\"rule\":{}}}",
+        "{{\"error\":\"denied by gateway ({})\",\"rule\":{},\"hint\":\"policy said no — retrying won't change the answer; propose an action or ask your lead\"}}",
         verdict.as_str(),
         rule_json
     )));
     *resp.status_mut() = StatusCode::FORBIDDEN;
+    let headers = resp.headers_mut();
+    headers.insert("x-roster-verdict", "deny".parse().unwrap());
+    if let Some(rule) = rule {
+        if let Ok(v) = rule.parse() {
+            headers.insert("x-roster-rule", v);
+        }
+    }
     resp
 }
 
@@ -353,10 +363,18 @@ async fn gate(gr: &GovernedRequest, subject: &str) -> Gate {
         HashMap::new()
     };
     if verdict == Verdict::Allow {
-        if let Some(reason) = crate::gateway::ledger::check(subject, &spend, &budget.limits, now) {
-            record(gr, Verdict::Deny, rule.as_deref(), None, &HashMap::new(), Some(&reason));
-            let mut resp = Response::new(full(&format!("{{\"error\":\"budget exceeded\",\"detail\":\"{reason}\"}}")));
+        if let Some(refusal) = crate::gateway::ledger::check(subject, &spend, &budget.limits, now) {
+            record(gr, Verdict::Deny, rule.as_deref(), None, &HashMap::new(), Some(&refusal.reason));
+            let mut resp = Response::new(full(&format!(
+                "{{\"error\":\"budget exceeded\",\"detail\":\"{}\",\"retry_after_secs\":{},\"hint\":\"a budget window is used up — nothing is broken; retry after it resets\"}}",
+                refusal.reason, refusal.retry_after_secs
+            )));
             *resp.status_mut() = StatusCode::PAYMENT_REQUIRED;
+            let headers = resp.headers_mut();
+            headers.insert("x-roster-verdict", "budget".parse().unwrap());
+            if let Ok(v) = refusal.retry_after_secs.to_string().parse() {
+                headers.insert(hyper::header::RETRY_AFTER, v);
+            }
             return Gate::Deny(resp);
         }
     }

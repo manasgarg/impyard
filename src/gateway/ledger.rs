@@ -39,10 +39,16 @@ fn usage_path() -> std::path::PathBuf {
     paths::usage_log()
 }
 
+/// A budget refusal: why, and when the window resets (for `Retry-After`).
+pub struct Refusal {
+    pub reason: String,
+    pub retry_after_secs: i64,
+}
+
 /// Would this call breach any limit? Checks the CURRENT balance (semantics: the
 /// call that crosses the line completes; the next one is refused). Returns the
-/// first breached limit's reason, or None.
-pub fn check(subject: &str, spend: &HashMap<String, f64>, limits: &[Limit], now: i64) -> Option<String> {
+/// first breached limit's refusal, or None.
+pub fn check(subject: &str, spend: &HashMap<String, f64>, limits: &[Limit], now: i64) -> Option<Refusal> {
     let c = counters().lock().unwrap();
     for limit in limits {
         if !scope_applies(&limit.scope, subject) || !spend.contains_key(&limit.currency) {
@@ -53,13 +59,17 @@ pub fn check(subject: &str, spend: &HashMap<String, f64>, limits: &[Limit], now:
             _ => 0.0,
         };
         if used >= limit.max {
-            return Some(format!(
-                "{} over {} cap ({:.4}/{:.4})",
-                limit.currency,
-                limit.window.label(),
-                used,
-                limit.max
-            ));
+            let reset_ms = limit.window.start(now) + limit.window.ms() - now;
+            return Some(Refusal {
+                reason: format!(
+                    "{} over {} cap ({:.4}/{:.4})",
+                    limit.currency,
+                    limit.window.label(),
+                    used,
+                    limit.max
+                ),
+                retry_after_secs: (reset_ms + 999) / 1000,
+            });
         }
     }
     None
