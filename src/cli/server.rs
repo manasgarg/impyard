@@ -24,6 +24,12 @@ pub async fn run(cap: usize, once: bool, no_listen: bool, addr: &str) -> Result<
         return Err(format!("invalid config ({} error(s)) — fix and retry, or: roster server validate", errors.len()).into());
     }
 
+    if let Ok(c) = crate::config::snapshot() {
+        for w in &c.warnings {
+            eprintln!("warning: {w}");
+        }
+    }
+
     let gateway = crate::gateway::start(addr).await?;
     eprintln!(
         "roster server {BUILD} — gateway on {addr}; dispatch cap {cap}{}{}",
@@ -76,6 +82,12 @@ pub fn validate() -> Result<(), BErr> {
                 }
                 Some(dir) => println!("engine: dev override {} (mounted over the baked engine)", dir.display()),
                 None => println!("engine: baked into the roster-box image"),
+            }
+            if !c.connections.is_empty() {
+                println!("connections: {}", c.connections.len());
+            }
+            for w in &c.warnings {
+                println!("warning: {w}");
             }
             Ok(())
         }

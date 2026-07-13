@@ -70,6 +70,26 @@ enum ServerCmd {
     /// Parse and check all config; print every error (config loads live)
     #[command(alias = "deploy")]
     Validate,
+    /// Connect a service in one step: login, vault, scaffolded connection file
+    Connect {
+        /// Catalog name (bare: list the catalog)
+        service: Option<String>,
+        /// Grant to this worker (repeatable); default is to ask
+        #[arg(long)]
+        worker: Vec<String>,
+        /// Org-wide: every current and future worker (the explicit escalation)
+        #[arg(long)]
+        org: bool,
+        /// Connection/credential name when it differs from the service
+        /// (e.g. --as github-yuko for a per-worker identity)
+        #[arg(long = "as")]
+        alias: Option<String>,
+    },
+    /// Service connections: scope, hosts, env, and whether each is active
+    Connections {
+        #[arg(long)]
+        json: bool,
+    },
     /// The approval desk: list, inspect, approve, deny
     #[command(subcommand)]
     Gates(GatesCmd),
@@ -370,6 +390,13 @@ async fn main() {
             } => cli::server::run(cap, once, no_listen, &addr).await,
             ServerCmd::Status { json } => cli::server::status(json).await,
             ServerCmd::Validate => cli::server::validate(),
+            ServerCmd::Connect {
+                service,
+                worker,
+                org,
+                alias,
+            } => cli::connections::connect(service, worker, org, alias).await,
+            ServerCmd::Connections { json } => cli::connections::ls(json),
             ServerCmd::Gates(cmd) => match cmd {
                 GatesCmd::Ls { json } => cli::gates::ls(json),
                 GatesCmd::Show { id } => cli::gates::show(&id),

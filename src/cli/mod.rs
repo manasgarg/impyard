@@ -4,6 +4,7 @@
 //! work, run, worker, channel).
 
 pub mod channel;
+pub mod connections;
 pub mod create;
 pub mod gates;
 pub mod init;

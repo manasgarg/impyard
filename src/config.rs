@@ -20,6 +20,24 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
+/// A service connection (`connections/<name>.toml`): one intent — "this
+/// worker may act on that service" — compiled into a grant with injection,
+/// an env exposure, and a provider template, all keyed by one name that is
+/// also the vault credential. Missing secret ⇒ disabled with a warning, not
+/// a config failure (nothing forwards a sentinel either way).
+#[derive(Clone, Debug)]
+pub struct Connection {
+    pub name: String,
+    pub provider: String,
+    /// None = org-wide; Some = these workers only.
+    pub workers: Option<Vec<String>>,
+    pub hosts: Vec<String>,
+    pub methods: Vec<String>,
+    pub env: String,
+    /// Secret present in the vault?
+    pub enabled: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct Expose {
     /// "org" or "org/<worker>" — which workers see this env var.
@@ -43,7 +61,13 @@ pub struct Loaded {
     /// `[[expose]]` — env vars set in the box to the sentinel; the gateway's
     /// per-grant injection swaps in the real credential in transit, only on
     /// requests the grant's scope allows. Leaking the box env leaks nothing.
+    /// Includes the exposures compiled from enabled connections.
     pub exposes: Vec<Expose>,
+    /// Service connections, for `server connections` and the wizard.
+    pub connections: Vec<Connection>,
+    /// Non-fatal conditions (e.g. a disabled connection) — printed by
+    /// `validate` and `server start`, never fail-closed.
+    pub warnings: Vec<String>,
     pub workers: Vec<String>,
     /// `[engine] dir` in org.toml — a dev checkout mounted read-only over the
     /// engine baked into the roster-box image. Unset (the default) runs the
@@ -205,6 +229,50 @@ pub fn load() -> Result<Loaded, Vec<String>> {
         }
     }
 
+    // Service connections (connections/<name>.toml). Their grants are spliced
+    // BEFORE all hand-written grants: first-match-wins, and a connection is
+    // host-specific by construction, so it must not be shadowed by a broad
+    // hand-written rule like `web-fetch` (GET on *).
+    let mut warnings: Vec<String> = Vec::new();
+    let mut connections: Vec<Connection> = Vec::new();
+    let mut connection_rules: Vec<Value> = Vec::new();
+    let registry = crate::credential::registry::registry_json();
+    let mut connection_files: Vec<PathBuf> = std::fs::read_dir(paths::connections_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("toml"))
+        .collect();
+    connection_files.sort();
+    for path in connection_files {
+        let name = path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        let v = match read_toml(&path) {
+            Ok(v) => v,
+            Err(e) => {
+                errors.push(format!("{}: {e}", path.display()));
+                continue;
+            }
+        };
+        match compile_connection(
+            &name,
+            &v,
+            &workers,
+            |p| registry.contains_key(p),
+            |c| crate::credential::vault::get_credential(c).is_some(),
+        ) {
+            Ok((connection, rules, connection_exposes, warning)) => {
+                connection_rules.extend(rules);
+                exposes.extend(connection_exposes);
+                warnings.extend(warning);
+                connections.push(connection);
+            }
+            Err(mut e) => errors.append(&mut e),
+        }
+    }
+    connection_rules.extend(rules);
+    let rules = connection_rules;
+
     // Validate by deserializing into the runtime's own types.
     let policy = parse::<Policy>(&mut errors, "policy (grants)", json!({ "rules": rules }));
     let budget = parse::<BudgetPolicy>(
@@ -235,9 +303,111 @@ pub fn load() -> Result<Loaded, Vec<String>> {
         storage: CompiledStoragePolicy { default: default_storage, workers: worker_storage },
         listeners,
         exposes,
+        connections,
+        warnings,
         workers,
         engine_dir,
     })
+}
+
+/// Compile one connection file into (record, judge rules, exposures, warning).
+/// Pure over the injected lookups, so it is unit-testable.
+fn compile_connection(
+    name: &str,
+    v: &toml::Value,
+    known_workers: &[String],
+    provider_exists: impl Fn(&str) -> bool,
+    secret_exists: impl Fn(&str) -> bool,
+) -> Result<(Connection, Vec<Value>, Vec<Expose>, Option<String>), Vec<String>> {
+    let mut errors = Vec::new();
+    let ctx = format!("connection \"{name}\"");
+
+    let provider = v.get("provider").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    if provider.is_empty() {
+        errors.push(format!("{ctx}: needs provider = \"<registry name>\""));
+    } else if !provider_exists(&provider) {
+        errors.push(format!("{ctx}: unknown provider \"{provider}\" (declare it in providers.toml)"));
+    }
+
+    let strings = |key: &str| -> Option<Vec<String>> {
+        v.get(key).and_then(|x| x.as_array()).map(|a| {
+            a.iter().filter_map(|s| s.as_str()).map(str::to_string).collect()
+        })
+    };
+    let org_scoped = v.get("scope").and_then(|x| x.as_str()) == Some("org");
+    let workers = strings("workers");
+    match (&workers, org_scoped) {
+        (Some(_), true) => errors.push(format!("{ctx}: choose workers = [..] OR scope = \"org\", not both")),
+        (None, false) => errors.push(format!("{ctx}: needs workers = [\"<name>\", ..] or scope = \"org\"")),
+        (Some(list), false) => {
+            for w in list {
+                if !known_workers.contains(w) {
+                    errors.push(format!("{ctx}: no such worker \"{w}\""));
+                }
+            }
+            if list.is_empty() {
+                errors.push(format!("{ctx}: workers = [] grants nothing — use scope = \"org\" or name workers"));
+            }
+        }
+        (None, true) => {}
+    }
+
+    let hosts = strings("hosts").unwrap_or_default();
+    if hosts.is_empty() {
+        errors.push(format!("{ctx}: needs hosts = [\"api.example.com\", ..]"));
+    }
+    let methods = strings("methods").unwrap_or_else(|| vec!["GET".into()]);
+    let env = v.get("env").and_then(|x| x.as_str()).unwrap_or_default().to_string();
+    if env.is_empty() {
+        errors.push(format!("{ctx}: needs env = \"<VAR the box sees>\""));
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    let enabled = secret_exists(name);
+    let connection = Connection {
+        name: name.to_string(),
+        provider,
+        workers: workers.clone(),
+        hosts: hosts.clone(),
+        methods: methods.clone(),
+        env: env.clone(),
+        enabled,
+    };
+    if !enabled {
+        // Disabled, not broken: no grant, no exposure, nothing to inject —
+        // and the rest of the config keeps working.
+        let fix = if name == connection.provider {
+            format!("roster server connect {name}")
+        } else {
+            format!("roster server connect {} --as {name}", connection.provider)
+        };
+        let warning = format!("{ctx} is disabled — no \"{name}\" credential in the vault (run: {fix})");
+        return Ok((connection, Vec::new(), Vec::new(), Some(warning)));
+    }
+
+    let scopes: Vec<String> = match &workers {
+        Some(list) => list.iter().map(|w| format!("org/{w}")).collect(),
+        None => vec!["org".to_string()],
+    };
+    let rules = scopes
+        .iter()
+        .map(|scope| {
+            json!({
+                "scope": scope,
+                "name": format!("connection:{name}"),
+                "match": { "host": hosts, "port": 443, "method": methods },
+                "verdict": "allow",
+                "inject": { "credential": name },
+            })
+        })
+        .collect();
+    let exposes = scopes
+        .into_iter()
+        .map(|scope| Expose { scope, credential: name.to_string(), env: env.clone() })
+        .collect();
+    Ok((connection, rules, exposes, None))
 }
 
 /// The env vars provisioning owns — an `[[expose]]` may not overwrite the
@@ -340,6 +510,20 @@ fn fingerprint() -> String {
     for spec in names {
         parts.push(stamp(&spec));
     }
+    let mut connections: Vec<PathBuf> = std::fs::read_dir(paths::connections_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    connections.sort();
+    for c in connections {
+        parts.push(stamp(&c));
+    }
+    // A connection's enabled-ness lives in the vault: the DIR mtime moves on
+    // credential create/delete (not on token refresh rewrites, which must not
+    // thrash this cache).
+    parts.push(stamp(&crate::paths::vault_dir()));
     parts.join("|")
 }
 
@@ -442,6 +626,65 @@ mod tests {
 
     fn expose(scope: &str, credential: &str, env: &str) -> Expose {
         Expose { scope: scope.into(), credential: credential.into(), env: env.into() }
+    }
+
+    fn toml(s: &str) -> toml::Value {
+        toml::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn connection_compiles_per_worker_grants_and_exposes() {
+        let v = toml(r#"
+            provider = "github"
+            workers = ["yuko", "kdemo"]
+            hosts = ["api.github.com"]
+            env = "GH_TOKEN"
+        "#);
+        let workers = vec!["yuko".to_string(), "kdemo".to_string()];
+        let (c, rules, exposes, warning) =
+            compile_connection("github", &v, &workers, |_| true, |_| true).unwrap();
+        assert!(c.enabled);
+        assert_eq!(c.methods, vec!["GET"]); // the default
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0]["scope"], "org/yuko");
+        assert_eq!(rules[0]["name"], "connection:github");
+        assert_eq!(rules[0]["match"]["host"][0], "api.github.com");
+        assert_eq!(rules[0]["inject"]["credential"], "github");
+        assert_eq!(exposes.len(), 2);
+        assert_eq!(exposes[1].scope, "org/kdemo");
+        assert_eq!(exposes[1].env, "GH_TOKEN");
+        assert!(warning.is_none());
+    }
+
+    #[test]
+    fn connection_without_secret_is_disabled_not_broken() {
+        let v = toml(r#"
+            provider = "github"
+            scope = "org"
+            hosts = ["api.github.com"]
+            env = "GH_TOKEN"
+        "#);
+        let (c, rules, exposes, warning) =
+            compile_connection("github", &v, &[], |_| true, |_| false).unwrap();
+        assert!(!c.enabled);
+        assert!(rules.is_empty() && exposes.is_empty());
+        assert!(warning.unwrap().contains("disabled"));
+    }
+
+    #[test]
+    fn connection_validation_catches_each_failure_mode() {
+        let v = toml(r#"
+            provider = "nope"
+            workers = ["ghost"]
+            env = ""
+        "#);
+        let errors =
+            compile_connection("acme", &v, &["yuko".to_string()], |p| p == "github", |_| true)
+                .unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("unknown provider")));
+        assert!(errors.iter().any(|e| e.contains("no such worker \"ghost\"")));
+        assert!(errors.iter().any(|e| e.contains("needs hosts")));
+        assert!(errors.iter().any(|e| e.contains("needs env")));
     }
 
     #[test]

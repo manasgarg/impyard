@@ -60,25 +60,39 @@ pub async fn run(name: &str) -> Result<(), BErr> {
     let p = registry
         .get(name)
         .ok_or_else(|| format!("unknown provider \"{name}\" — try one of: {}", available.join(", ")))?;
+    let cred = login(name, p).await?;
+    store(name, &cred)?;
+    println!("\nconnected: credential for \"{name}\" written to the vault");
+    Ok(())
+}
 
-    let cred = match p.get("auth").and_then(|v| v.as_str()) {
-        Some("api_key") => connect_api_key()?,
-        Some("smtp") => connect_smtp()?,
-        Some("discord") => connect_discord()?,
+/// Run a provider's interactive login flow and return the credential JSON
+/// (not stored). The connections wizard stores it under its own name.
+pub async fn login(provider_name: &str, p: &Value) -> Result<Value, BErr> {
+    match p.get("auth").and_then(|v| v.as_str()) {
+        Some("api_key") => connect_api_key(),
+        Some("smtp") => connect_smtp(),
+        Some("discord") => connect_discord(),
         Some("oauth") => {
             let login = p.get("login").cloned().unwrap_or_else(|| json!({}));
             match login.get("flow").and_then(|v| v.as_str()) {
-                Some("device_code") => connect_device_code(p, &login).await?,
-                Some("pkce") => connect_pkce(p, &login).await?,
-                other => return Err(format!("provider \"{name}\": unknown oauth flow {other:?}").into()),
+                Some("device_code") => connect_device_code(p, &login).await,
+                Some("pkce") => connect_pkce(p, &login).await,
+                other => Err(format!("provider \"{provider_name}\": unknown oauth flow {other:?}").into()),
             }
         }
-        other => return Err(format!("provider \"{name}\": unknown auth {other:?}").into()),
-    };
+        other => Err(format!("provider \"{provider_name}\": unknown auth {other:?}").into()),
+    }
+}
 
-    write_vault(name, &cred)?;
-    println!("\nconnected: credential for \"{name}\" written to the vault");
-    Ok(())
+/// Store a credential in the vault under `name` (0600, atomic).
+pub fn store(name: &str, cred: &Value) -> Result<(), BErr> {
+    write_vault(name, cred)
+}
+
+/// One line of input from the terminal — the wizard's worker prompt.
+pub fn ask(question: &str) -> Result<String, BErr> {
+    prompt(question)
 }
 
 // ── api-key ──────────────────────────────────────────────────────────────────

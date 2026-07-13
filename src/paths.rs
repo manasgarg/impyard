@@ -62,6 +62,12 @@ pub fn providers_file() -> PathBuf {
     config_root().join("providers.toml")
 }
 
+/// Service connections — one file per connected service (docs/connections.md),
+/// machine-scaffolded by `roster server connect`, human-owned thereafter.
+pub fn connections_dir() -> PathBuf {
+    config_root().join("connections")
+}
+
 pub fn workers_dir() -> PathBuf {
     config_root().join("workers")
 }
