@@ -1,9 +1,12 @@
 # The box: a CAPABLE machine behind a governed door (docs/capable-box.md).
 # Tools are baked in deliberately — on the NAT-less network more binaries add
 # no egress power, and a missing tool is an illegible "no" that belongs to the
-# gateway instead. pi itself is NOT baked in yet — it comes from the read-only
-# engine bind-mount, so the box always runs the exact pinned version on disk
-# and cannot tamper with its own tools.
+# gateway instead. pi + the box extensions are baked at the version pinned by
+# the repo's lockfile; `[engine] dir` in org.toml is a dev override that
+# mounts a checkout over them.
+#
+# Build from the REPO ROOT (the engine layers need package-lock.json + box/):
+#   docker build -t roster-box -f box/Dockerfile .
 FROM node:24-bookworm-slim
 
 # Tier 1 — always installed. Base image already carries node/npm/npx.
@@ -41,12 +44,22 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 RUN corepack enable
 
 # Tier 2 — org choice, heavy: document/media tooling.
-#   docker build --build-arg TIER2=1 -t roster-box box/
+#   docker build --build-arg TIER2=1 -t roster-box -f box/Dockerfile .
 ARG TIER2=0
 RUN if [ "$TIER2" = "1" ]; then \
       apt-get update \
       && apt-get install -y --no-install-recommends pandoc imagemagick ffmpeg \
       && rm -rf /var/lib/apt/lists/*; \
     fi
+
+# The engine: pi + extensions at the lockfile-pinned version. /opt/roster/engine/run-pi
+# is the stable entry the host invokes — it expands the baked extensions itself,
+# so the host never needs to inspect the image.
+COPY package.json package-lock.json /opt/roster/engine/
+RUN cd /opt/roster/engine && npm ci --omit=dev && npm cache clean --force
+COPY box/extensions /opt/roster/engine/box/extensions
+RUN node -e "const path=require('path');const dir='/opt/roster/engine/node_modules/@earendil-works/pi-coding-agent';const p=require(dir+'/package.json');const bin=typeof p.bin==='string'?p.bin:p.bin.pi;require('fs').symlinkSync(path.join(dir,bin),'/opt/roster/engine/pi')" \
+  && printf '#!/bin/sh\nexec node /opt/roster/engine/pi --no-extensions $(for f in /opt/roster/engine/box/extensions/*.ts; do printf -- "-e %%s " "$f"; done) "$@"\n' > /opt/roster/engine/run-pi \
+  && chmod +x /opt/roster/engine/run-pi
 
 WORKDIR /workspace

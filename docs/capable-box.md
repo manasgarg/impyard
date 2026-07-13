@@ -1,8 +1,9 @@
 # The capable box (spec, 2026-07-13)
 
-**Status: increments 1–4 implemented and conformance-verified 2026-07-13**
-(e52da21 bundle+DNS, 4cc86e7 verdicts, 6a3ea9d toolbelt, 2df6631 expose).
-Remaining: 2b (bake pi into the image, retire `[engine] dir`). Conformance:
+**Status: fully implemented and conformance-verified 2026-07-13**
+(e52da21 bundle+DNS, 4cc86e7 verdicts, 6a3ea9d toolbelt, 2df6631 expose,
+plus 2b: pi baked into the image; `[engine] dir` is now a dev override and
+the deployment runs without it — the box no longer mounts the checkout). Conformance:
 curl/python/node/gh all reached an allowed host through the gateway (gh got a
 real GitHub 401 for a dummy token — proxy, bundle TLS, and policy all held);
 an ungranted POST returned 403 with `x-roster-verdict: deny`; a raw socket to

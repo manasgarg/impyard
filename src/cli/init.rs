@@ -8,10 +8,10 @@ const STARTER_ORG: &str = r#"# Roster org config — ADMIN-ONLY. Applies to ever
 # per-worker overlays live in workers/<name>/worker.toml. Config loads live:
 # check edits with `roster server validate`.
 
-# Where the roster checkout lives — the box mounts pi + extensions from here
-# (until they are baked into the box image).
-[engine]
-dir = "/path/to/roster"
+# pi + the box extensions are baked into the roster-box image. Developers
+# iterating on them can mount a checkout over the baked engine instead:
+# [engine]
+# dir = "/path/to/roster"
 
 # Egress grants shared by all workers, e.g.:
 # [[grant]]
@@ -51,7 +51,7 @@ pub fn run() -> Result<(), BErr> {
         println!("created {:<15} {}", "org.toml", org.display());
     }
     println!(
-        "\nnext: edit {} (set [engine] dir), then\n  roster worker init <name>\n  roster server validate\n  roster server start",
+        "\nnext: edit {} (grants, actions, budgets), then\n  roster worker init <name>\n  roster server validate\n  roster server start",
         org.display()
     );
     println!(

@@ -748,18 +748,57 @@ fn build_cache_plan(worker: &str, system_blocks: &[CompiledBlock]) -> CachePlan 
     }
 }
 
+/// The roster-box image id, once per process — the engine identity when pi is
+/// baked in (no engine dir to hash). Empty when docker is unavailable.
+fn box_image_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::process::Command::new("docker")
+            .args(["image", "inspect", "--format", "{{.Id}}", "roster-box"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
+    })
+}
+
 fn engine_fingerprint() -> String {
     let mut digest = Sha256::new();
     digest.update(b"pi-only-v1\0");
-    let base = crate::config::snapshot()
-        .ok()
-        .and_then(|c| c.engine_dir.clone())
-        .unwrap_or_default();
-    for path in [base.join("package-lock.json"), base.join("package.json")] {
-        if let Ok(bytes) = std::fs::read(path) {
-            digest.update(bytes);
+    let engine_dir = crate::config::snapshot().ok().and_then(|c| c.engine_dir.clone());
+    match engine_dir {
+        // Baked engine: the image id pins pi, the extensions, and the wrapper.
+        None => digest.update(box_image_id().as_bytes()),
+        // Dev override: hash what the mount will actually serve.
+        Some(base) => {
+            for path in [base.join("package-lock.json"), base.join("package.json")] {
+                if let Ok(bytes) = std::fs::read(path) {
+                    digest.update(bytes);
+                }
+            }
+            let mut extensions = std::fs::read_dir(base.join("box/extensions"))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("ts"))
+                .collect::<Vec<_>>();
+            extensions.sort();
+            for path in extensions {
+                digest.update(
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .as_bytes(),
+                );
+                if let Ok(bytes) = std::fs::read(path) {
+                    digest.update(bytes);
+                }
+            }
         }
     }
+    // Host-side pi settings ship into the box either way.
     if let Ok(home) = std::env::var("HOME") {
         let settings = PathBuf::from(home).join(".pi/agent/settings.json");
         if let Ok(text) = std::fs::read_to_string(settings) {
@@ -772,25 +811,6 @@ fn engine_fingerprint() -> String {
                     digest.update(b"\0");
                 }
             }
-        }
-    }
-    let mut extensions = std::fs::read_dir(base.join("box/extensions"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("ts"))
-        .collect::<Vec<_>>();
-    extensions.sort();
-    for path in extensions {
-        digest.update(
-            path.file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .as_bytes(),
-        );
-        if let Ok(bytes) = std::fs::read(path) {
-            digest.update(bytes);
         }
     }
     format!("{:x}", digest.finalize())

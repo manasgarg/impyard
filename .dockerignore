@@ -1,0 +1,8 @@
+# The box image builds from the repo root but needs only the engine inputs:
+# the npm manifest+lockfile and the box extensions. Everything else stays out
+# of the build context (target/ alone is gigabytes).
+*
+!package.json
+!package-lock.json
+!box/
+box/Dockerfile

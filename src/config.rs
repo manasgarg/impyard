@@ -45,8 +45,9 @@ pub struct Loaded {
     /// requests the grant's scope allows. Leaking the box env leaks nothing.
     pub exposes: Vec<Expose>,
     pub workers: Vec<String>,
-    /// The platform checkout the box mounts (`[engine] dir` in org.toml) —
-    /// needed until pi + the extensions are baked into the box image.
+    /// `[engine] dir` in org.toml — a dev checkout mounted read-only over the
+    /// engine baked into the roster-box image. Unset (the default) runs the
+    /// baked engine.
     pub engine_dir: Option<PathBuf>,
 }
 

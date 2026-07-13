@@ -74,8 +74,8 @@ pub fn validate() -> Result<(), BErr> {
                 Some(dir) if !dir.join("box").is_dir() => {
                     println!("warning: [engine] dir {} has no box/ — sessions will fail", dir.display())
                 }
-                Some(_) => {}
-                None => println!("note: [engine] dir is unset — sessions need it until pi is baked into the box image"),
+                Some(dir) => println!("engine: dev override {} (mounted over the baked engine)", dir.display()),
+                None => println!("engine: baked into the roster-box image"),
             }
             Ok(())
         }

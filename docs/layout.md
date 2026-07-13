@@ -44,10 +44,11 @@ Design notes:
   own types via `src/config.rs` (`snapshot()`, mtime-cached, so edits are
   live). `roster server validate` runs the same loader and prints every error.
 - **The box mounts none of this.** Isolation by absence, not by shadow
-  mounts: the container sees only the engine checkout (`[engine] dir`,
-  read-only), its own run dir, its channel history (read-only), and the CA
-  certificate. The old `STATE_DIRS` shadow machinery and the `.env` canary
-  are retired.
+  mounts: the container sees only its own run dir, its channel history
+  (read-only), and the CA certificate + trust bundle. pi and the extensions
+  are baked into the roster-box image (`[engine] dir` is an optional dev
+  override that mounts a checkout over them). The old `STATE_DIRS` shadow
+  machinery and the `.env` canary are retired.
 - **Worker-first data**: a worker's whole footprint is one subtree under
   `data/workers/<name>/`. Runs stay global (`state/runs/`) because run ids
   are cross-worker handles; a run's attribution lives in its `run.json`.

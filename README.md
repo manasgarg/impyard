@@ -44,8 +44,9 @@ The language boundary is the trust boundary (see D20 in the handoff):
   vendored) and its extensions (`box/extensions/`: web search/fetch, and the
   action tools). They reach the Rust side across the container contract, a
   serialized boundary that's serialized anyway.
-- **Near-zero dependencies by policy.** `npm install` provides pi to the box;
-  there is no host-side Node code.
+- **Near-zero dependencies by policy.** pi is baked into the roster-box image
+  at the lockfile-pinned version; there is no host-side Node code. (`npm
+  install` + `[engine] dir` in org.toml mounts a dev checkout over it.)
 - `npm test` runs the gateway's Rust tests (`cargo test`).
 
 ## Layout
@@ -71,13 +72,12 @@ handlers; the clap grammar is in `main.rs`).
 
 ## Run
 
-Build the binary once (`cargo build`; `roster` = `target/debug/roster`), and
-`npm install` to provide pi to the box. Run from the repo root (config and
-`node_modules` resolve relative to it). Config is authored as TOML specs and
-loads live — no deploy step:
+Build the binary once (`cargo build`; `roster` = `target/debug/roster`) and
+the box image (it bakes pi + the extensions at the lockfile-pinned version).
+Config is authored as TOML specs and loads live — no deploy step:
 
 ```
-docker build -t roster-box box/            # once
+docker build -t roster-box -f box/Dockerfile .   # once, from the repo root
 roster init                                # create the config/data/state roots
 roster worker init yuko                    # scaffold ~/.config/roster/workers/yuko/
 roster server validate                     # parse + check all config (loads live)

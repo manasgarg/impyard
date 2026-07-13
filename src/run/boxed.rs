@@ -5,7 +5,7 @@
 //! only exit is the gateway. Nothing beyond the ceiling timeout.
 
 use crate::util::now_ms;
-use base64::Engine;
+use base64::Engine as _;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -99,6 +99,17 @@ pub struct Outcome {
 pub struct CodeSpec {
     pub repo: String,
     pub base: String,
+}
+
+/// Where pi + the box extensions come from.
+enum Engine {
+    /// Baked into the roster-box image at /opt/roster/engine (the default).
+    /// `run-pi` in the image expands the baked extensions itself, so the host
+    /// never inspects image contents.
+    Baked,
+    /// `[engine] dir` in org.toml — a dev checkout mounted read-only over the
+    /// baked engine; entry and extensions resolve from the host filesystem.
+    Mounted(PathBuf),
 }
 
 /// One trusted conversation turn delivered to a warm session. The text goes to
@@ -223,7 +234,7 @@ async fn run_box(
         container,
         session_dir,
         run_dir,
-        repo,
+        engine,
         mut storage,
     } = provision_box(
         worker,
@@ -235,7 +246,7 @@ async fn run_box(
         Some(ceiling_min),
     )
     .await?;
-    args.extend(pi_prefix(&repo, "json", &session_dir)?);
+    args.extend(pi_prefix(&engine, "json", &session_dir)?);
     append_cache_session_id(&mut args, &compiled.cache.route_key);
     if !compiled.system_prompt.is_empty() {
         args.extend([
@@ -335,7 +346,7 @@ pub async fn run_session(
         container,
         session_dir,
         run_dir,
-        repo,
+        engine,
         mut storage,
     } = match provision_box(worker, run_id, "", None, &start_context, "append", None).await {
         Ok(provisioned) => provisioned,
@@ -345,7 +356,7 @@ pub async fn run_session(
         }
     };
     args.insert(1, "-i".into()); // keep stdin open for the rpc protocol
-    args.extend(pi_prefix(&repo, "rpc", &session_dir)?);
+    args.extend(pi_prefix(&engine, "rpc", &session_dir)?);
     append_cache_session_id(&mut args, &start.cache.route_key);
     args.extend(["--append-system-prompt".into(), start.system_prompt]);
 
@@ -461,18 +472,25 @@ pub async fn run_session(
 
 /// The pi command prefix shared by both box modes: node + entry, output mode, no
 /// host extension discovery, Roster's own extensions, and the session dir.
-fn pi_prefix(repo: &Path, mode: &str, session_dir: &Path) -> Result<Vec<String>, BErr> {
-    let mut v = vec![
-        "node".into(),
-        resolve_pi_entry(repo)?,
-        "--mode".into(),
-        mode.into(),
-        "--no-extensions".into(),
-    ];
-    for ext in box_extensions(repo) {
-        v.push("-e".into());
-        v.push(ext);
-    }
+fn pi_prefix(engine: &Engine, mode: &str, session_dir: &Path) -> Result<Vec<String>, BErr> {
+    let mut v = match engine {
+        // The wrapper supplies --no-extensions and the baked extension list.
+        Engine::Baked => vec!["/opt/roster/engine/run-pi".into(), "--mode".into(), mode.into()],
+        Engine::Mounted(repo) => {
+            let mut v = vec![
+                "node".into(),
+                resolve_pi_entry(repo)?,
+                "--mode".into(),
+                mode.into(),
+                "--no-extensions".into(),
+            ];
+            for ext in box_extensions(repo) {
+                v.push("-e".into());
+                v.push(ext);
+            }
+            v
+        }
+    };
     v.extend(["--session-dir".into(), session_dir.display().to_string()]);
     Ok(v)
 }
@@ -497,7 +515,7 @@ struct Provisioned {
     container: String,
     session_dir: PathBuf,
     run_dir: PathBuf,
-    repo: PathBuf,
+    engine: Engine,
     storage: crate::worker::knowledge::RunStorage,
 }
 
@@ -524,12 +542,13 @@ async fn provision_box(
 
     let config = crate::config::snapshot().map_err(|e| format!("config invalid:\n{e}"))?;
 
-    // The engine checkout (pi + box extensions) — the ONLY roster-adjacent
-    // directory the box mounts; config/data/state live elsewhere entirely.
-    let repo = config
-        .engine_dir
-        .clone()
-        .ok_or("org.toml needs [engine] dir = \"<path to the roster checkout>\" — the box mounts pi + extensions from there (until they are baked into the box image)")?;
+    // The engine: baked into the image by default; `[engine] dir` (a dev
+    // checkout, the ONLY roster-adjacent directory the box ever mounts) wins
+    // when set. Config/data/state live elsewhere entirely.
+    let engine = match config.engine_dir.clone() {
+        Some(dir) => Engine::Mounted(dir),
+        None => Engine::Baked,
+    };
     let run_dir = crate::paths::run_dir(run_id);
     let workspace = run_dir.join("workspace");
     let session = run_dir.join("session");
@@ -599,9 +618,10 @@ async fn provision_box(
         "127.0.0.1".into(),
         "-u".into(),
         format!("{uid}:{gid}"),
-        "-v".into(),
-        format!("{0}:{0}:ro", repo.display()),
     ];
+    if let Engine::Mounted(repo) = &engine {
+        args.extend(["-v".into(), format!("{0}:{0}:ro", repo.display())]);
+    }
     append_container_temp(&mut args);
     let mount = |p: &Path| format!("{0}:{0}", p.display());
     args.extend([
@@ -707,7 +727,7 @@ async fn provision_box(
         container,
         session_dir: session,
         run_dir,
-        repo,
+        engine,
         storage,
     })
 }
