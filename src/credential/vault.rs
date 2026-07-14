@@ -58,8 +58,15 @@ pub fn render_injection(cred: &Credential, provider_name: &str) -> Vec<(String, 
     let Some(p) = crate::credential::registry::provider(provider_name) else {
         return Vec::new();
     };
+    render_headers(cred, &p.inject)
+}
+
+pub fn render_headers(
+    cred: &Credential,
+    headers: &[crate::credential::registry::InjectHeader],
+) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    for h in &p.inject {
+    for h in headers {
         if let Some(value) = substitute(&h.value, cred) {
             out.push((h.header.clone(), value));
         }

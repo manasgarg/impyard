@@ -1,7 +1,7 @@
 //! The provider registry. Defaults for known providers ship inside the binary
 //! (src/providers.default.json); the admin can override or add providers in
 //! `<config>/providers.toml` — a top-level table per provider, replacing the
-//! default entry wholesale. Shared by `vault connect` and the gateway
+//! default entry wholesale. Shared by `credential add` and the gateway
 //! (refresh constants + the inject spec). See docs/injection-spec.md.
 
 use crate::paths;
@@ -28,7 +28,7 @@ pub struct Provider {
     pub inject: Vec<InjectHeader>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 pub struct InjectHeader {
     pub header: String,
     pub value: String,

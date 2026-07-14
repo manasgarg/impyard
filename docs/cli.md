@@ -1,11 +1,12 @@
-# The CLI (v2.1, 2026-07-13)
+# The CLI (v2.2, 2026-07-14)
 
-**Status: implemented.** The `impyard` binary's grammar is two groups that
+**Status: implemented.** The `impyard` binary's grammar uses resource groups that
 mirror the product thesis — *rented intelligence, owned governance*:
 
 - **`impyard server …`** — the owned machinery: the daemon, config validation,
-  the approval desk, channel edges, the credential vault, and the run log
-  (every session, whoever ran it).
+  the approval desk, channel edges, and the run log (every session, whoever ran it).
+- **`impyard connection …`** — service capabilities and the imps allowed to use them.
+- **`impyard credential …`** — provider authentication held on the host.
 - **`impyard imp …`** — the governed identities: lifecycle, trust, memory,
   knowledge, each imp's durable task queue — and running sessions as one,
   directly or interactively.
@@ -32,18 +33,23 @@ init              create the config/data/state roots (XDG; idempotent)
 server start      [--cap N] [--once] [--no-listen] [--addr HOST:PORT]
 server status     [--json]
 server validate   parse + check all config, print every error
-server connect    [<service>] [--imp W].. [--org] [--as NAME]
-                    one-step service connection: login → vault → scaffold
-                    connections/<name>.toml (bare: the catalog); docs/connections.md
-server connections [--json]   the inventory: scope, hosts, env, active/disabled
 server gates      ls [--json] | show <id> | approve <id> [note] | deny <id> [note]
 server channel    ls [--json] | show <id> | trust <id> | untrust <id>
                   | set <id> <key> <value>
                     keys: mode, memory, memory-inferred, memory-kinds,
                           memory-retention, memory-notes, memory-chars
-server vault      connect <provider> | sync | ls [--json]
 server runs       ls [--imp W] [--limit N] [--json]
                   | show <run> | context <run> [--all] | recall <run>
+
+connection catalog
+connection add    [<service>] [--imp W].. [--org] [--name NAME]
+                  [--host H].. [--header TEMPLATE] [--env VAR] [--method M]..
+                    login → credential → connections/<name>.toml
+                    bare: show the catalog; unknown services require --host
+connection ls     [--json]   scope, hosts, env, active/disabled
+
+credential add    <provider>
+credential ls     [--json]
 
 imp init       <name>
 imp ls         [--json]
@@ -95,7 +101,7 @@ merged), so silent translation could misparse.
 | `deploy` | `server validate` (config loads live — no deploy step) |
 | `gates …` | `server gates …` |
 | `channel …` (incl. `memory-*` subcommands) | `server channel …` / `channel set` |
-| `connect <p>` / `vault-sync` | `server vault connect <p>` / `server vault sync` |
+| `connect <p>` | `credential add <p>` |
 | `create <n>` | `imp init <n>` |
 | `queue add --imp W "p"` | `imp task add W "p"` |
 | `relay --imp W "m"` | `imp task relay W "m"` |
@@ -106,7 +112,17 @@ merged), so silent translation could misparse.
 | `session --imp W` / `agent chat W` | `imp chat W` |
 | `runs …` / `agent ls\|show\|context\|recall` | `server runs ls\|show\|context\|recall` |
 
-New in v2 (no old equivalent): `server status`, `server vault ls`,
+The v2.2 resource names replace the short-lived v2.1 server forms:
+
+| v2.1 | v2.2 |
+|---|---|
+| `server connect` | `connection catalog` |
+| `server connect <service> [--as NAME]` | `connection add <service> [--name NAME]` |
+| `server connections` | `connection ls` |
+| `server vault connect <provider>` | `credential add <provider>` |
+| `server vault ls` | `credential ls` |
+
+New in v2 (no old equivalent): `server status`, `credential ls`,
 `imp ls`, `imp show`, `imp trust`.
 
 ## The layout underneath

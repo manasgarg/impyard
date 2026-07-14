@@ -46,18 +46,16 @@ chatgpt-account-id: <accountId>       <- account identifier (injected too, so th
 ```
 
 **Scope decision:** this increment injects the current token. Automatic
-**OAuth refresh is deferred** to a follow-up (pi's refresh flow is minified
-and version-specific; reimplementing it now would be fragile). Consequence,
-stated honestly: past the token's validity window the box stops working
-until the vault is re-synced (`vault-sync`). The security property — box
-never holds the key — holds regardless.
+OAuth refresh is gateway-owned. Expired tokens are refreshed and persisted
+without involving the box. The security property — the box never holds the
+key — holds throughout.
 
 ## Design
 
 **Vault (gateway-owned, host-side).** `~/.impyard/vault/<name>.json`, outside
 the repo and outside the box mount (like the CA). Holds the real credential.
-Seeded by a dev verb `vault-sync`, which copies the current pi auth entries
-in. "The gateway holds all credentials" becomes literal.
+Seeded by `impyard credential add`, which runs the provider's login flow.
+"The gateway holds all credentials" becomes literal.
 
 **Injection binds to a rule** (per D15/D16 — meaning attaches to rule
 names). A rule gains an optional `inject`:
@@ -90,11 +88,11 @@ sentinel; the gateway swaps it. Real values never touch the box.
 
 | # | File | ~Size | What |
 |---|---|---|---|
-| 1 | `src/vault.ts` | ~40 | `getCredential(name)`, `syncFromPiAuth()`. Store at `~/.impyard/vault/`. |
+| 1 | `src/vault.ts` | ~40 | `getCredential(name)`. Store at `~/.impyard/vault/`. |
 | 2 | `src/schema.ts` | +3 | `Rule.inject?: { credential: string }`; `Decision.injected?: string[]`. |
 | 3 | `src/gateway.ts` | +~25 | On allow, if the rule injects: render headers from the vault credential, overwrite outgoing headers, record injected names. Missing credential ⇒ deny. |
 | 4 | `src/box.ts` | ~edit | Write a **sentinel** auth.json (real shape, secrets nulled to sentinels, expires far future) instead of copying the real one. |
-| 5 | `src/cli.ts` | +few | Dev verb `vault-sync`. |
+| 5 | `src/cli.ts` | +few | Provider login through `connection add`. |
 | 6 | `policies/gateway.json` | +1 | Add `inject` to `model-api`. |
 
 Zero new deps. Vault lives outside the box mount → invariant 2 (no secrets
@@ -118,8 +116,8 @@ in the box) now holds for the model key too, not just search keys.
 
 ## Build order
 
-1. `vault.ts` + `vault-sync` verb; sync and confirm the vault file exists,
-   real token off the repo. Commit.
+1. `vault.ts` + provider login; connect and confirm the vault file exists,
+   with the real token off the repo. Commit.
 2. `schema.ts` + `gateway.ts` injection + `policies` inject directive; test
    injection host-side (curl with a sentinel bearer through the proxy →
    gateway swaps → real host authenticates). Commit.
@@ -155,20 +153,16 @@ confirmed the valid path skips refresh. **Not** exercised: a real
 openai-codex rotation — it would consume/rotate the in-use token and desync
 the host `pi` login, so it's left to happen naturally at expiry.
 
-**Operational contract — refresh tokens rotate.** Once the gateway refreshes,
-the provider invalidates the old refresh token, so the host's
-`~/.pi/agent/auth.json` goes stale. The **vault becomes the sole source of
-truth**; `vault-sync` is a one-time bootstrap, *not* something to re-run
-(it would import a now-dead refresh token). If the vault chain ever breaks,
-re-login host-side via pi, then `vault-sync` once.
+**Operational contract — refresh tokens rotate.** The vault is the sole source
+of truth. If a refresh chain breaks, run `impyard credential add <provider>`
+again to authenticate a new connection.
 
 ## Credential creation — `connect` (implemented 2026-07-09)
 
 The gateway now creates credentials itself, not just refreshes them — the
 OneCLI-style "connect a service" step, done our own way (no OneCLI code).
-`node src/cli.ts connect <provider>` runs the provider's login flow and writes
-the vault; refresh then keeps it alive. `vault-sync` remains as the shortcut
-for "I already logged into pi."
+`impyard credential add <provider>` runs the provider's login flow and writes
+the vault; refresh then keeps it alive.
 
 - **A generalized provider registry, `providers.json`** — the single source of
   truth, read by *both* the CLI (`connect`) and the gateway (refresh + inject),

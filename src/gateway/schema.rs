@@ -63,6 +63,9 @@ pub struct McpMatch {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Inject {
     pub credential: String,
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub headers: Vec<crate::credential::registry::InjectHeader>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

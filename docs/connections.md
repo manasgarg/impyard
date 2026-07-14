@@ -27,36 +27,37 @@ Two structural fixes over hand-authoring:
   (GET on `*`) can never shadow a connection's injection.
 - **No sequencing trap.** A connection whose secret is missing from the vault
   is *disabled* — grant and exposure omitted, loud warning in `validate`,
-  `server start`, and `connections` — instead of failing the whole config
+  `server start`, and `connection ls` — instead of failing the whole config
   closed. (Hand-written `[[expose]]` keeps strict fail-closed semantics.)
 
 ## One command
 
 ```
-impyard server connect                      # the catalog
-impyard server connect github --imp yuko # login → vault → scaffold → validate
-impyard server connect github --org         # org-wide, spelled out
-impyard server connect github --as github-kdemo --imp kdemo
+impyard connection catalog
+impyard connection add                   # also shows the catalog
+impyard connection add github --imp yuko # login → vault → scaffold → validate
+impyard connection add github --org         # org-wide, spelled out
+impyard connection add github --name github-kdemo --imp kdemo
 ```
 
 The wizard runs the provider's login flow, stores the secret, scaffolds the
 connection file (once — re-running only **rotates the secret**, never touches
 the admin's edits), and prints the compiled result. Without `--imp`/`--org`
 it asks; per-imp is the default posture because a connection is a
-capability granted to an identity, not to the fleet. `--as` names the
+capability granted to an identity, not to the fleet. `--name` names the
 connection/credential differently from the service — the idiom for per-imp
 service identities (separate PATs ⇒ the service's own audit log distinguishes
 imps too).
 
-Inventory: `impyard server connections [--json]` — provider, scope, hosts, env,
+Inventory: `impyard connection ls [--json]` — provider, scope, hosts, env,
 active/DISABLED.
 
 ## Scope rules
 
 - **Services are box-consumed capabilities** → per-imp by default.
-- **Channels (discord, smtp) are host-consumed infrastructure** → they are
-  NOT connections. `server connect discord` does the vault step and points at
-  the imp.toml `[channels]` binding; the credential never enters a box.
+- **Channels (discord, slack, smtp) are host-consumed infrastructure.**
+  `credential add discord` stores the credential; bind it in the imp.toml
+  `[channels]` table. The credential never enters a box.
 - Model providers (anthropic, openai-codex) are wired via grants as before.
 
 ## The catalog
@@ -64,8 +65,28 @@ active/DISABLED.
 Ships in the binary's provider registry: github, gitlab, slack-api, notion,
 linear — each with auth kind, inject template, canonical hosts, and the
 conventional env var. (`slack` is the *channel* provider — see
-docs/slack-channel.md.) Custom services need three lines in providers.toml, then
-`connect` treats them like catalog entries:
+docs/slack-channel.md.) These are presets, not a restriction.
+
+Add any token-authenticated service by naming its host. Impyard prompts for the
+token without echoing it and defaults to `Authorization: Bearer {token}`, GET,
+and an environment variable derived from the connection name:
+
+```sh
+impyard connection add acme --host api.acme.com --imp yuko
+```
+
+Override those defaults for APIs with different conventions:
+
+```sh
+impyard connection add gitlab-internal \
+  --host gitlab.example.com \
+  --header 'Private-Token: {token}' \
+  --env GITLAB_TOKEN \
+  --method GET --method POST \
+  --imp yuko
+```
+
+For a reusable preset with a custom login flow, declare it in `providers.toml`:
 
 ```toml
 [acme]

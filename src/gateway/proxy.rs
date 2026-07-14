@@ -416,7 +416,14 @@ async fn gate(gr: &GovernedRequest, subject: &str) -> Gate {
                         return Gate::Deny(deny_response(Verdict::Deny, rule.as_deref()));
                     }
                     Ok(Some(cred)) => {
-                        inject = vault::render_injection(&cred, &inj.credential);
+                        inject = if inj.headers.is_empty() {
+                            vault::render_injection(
+                                &cred,
+                                inj.provider.as_deref().unwrap_or(&inj.credential),
+                            )
+                        } else {
+                            vault::render_headers(&cred, &inj.headers)
+                        };
                         injected_names = Some(inject.iter().map(|(k, _)| k.clone()).collect());
                     }
                 }

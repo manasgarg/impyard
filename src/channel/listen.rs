@@ -40,8 +40,11 @@ pub async fn supervised(imp: String, platform: String, credential: String) {
 pub async fn listen_imp(imp: &str, platform: &str, credential: &str) -> Result<(), BErr> {
     let _listener_lock = ListenerLock::acquire(imp, platform)?;
 
-    let cred = crate::credential::vault::get_credential(credential)
-        .ok_or_else(|| format!("no \"{credential}\" credential in the vault — run: impyard server vault connect {platform}"))?;
+    let cred = crate::credential::vault::get_credential(credential).ok_or_else(|| {
+        format!(
+            "no \"{credential}\" credential in the vault — run: impyard credential add {platform}"
+        )
+    })?;
     let field = |name: &str| -> Result<String, BErr> {
         Ok(cred
             .get(name)
