@@ -2,7 +2,7 @@
 
 **Superseded by D20 (2026-07-09): the *entire* trusted host-side is now Rust.**
 The gateway port (P0–P4) below was the first half; D20 then folded the
-orchestration (box runner, lockdown, `create`/`deploy`/`connect`/`vault-sync`)
+orchestration (box runner, lockdown, `create`/`deploy`/`connect`)
 into the same `impyard` binary and retired all of `src/*.ts`. TypeScript now
 lives only inside the box (pi + extensions). One binary, one schema set — the
 D17 "Rust gateway / TS orchestration" split (referenced below) no longer holds.
@@ -12,7 +12,7 @@ D17 "Rust gateway / TS orchestration" split (referenced below) no longer holds.
 **Status: P0–P4 complete, 2026-07-08 — the Rust gateway fully replaces the TS
 one.** The box runs end to end through it (TLS termination + judge + injection
 + refresh), and `src/{gateway,judge,vault,providers,ca,schema}.ts` are retired
-(only the `vault-sync` bootstrap remains in TS). `npm test` runs the Rust
+(only credential login remains in TS). `npm test` runs the Rust
 tests (11 green). Next: the metering/currency/budget model with CEL on the
 Rust base.
 
@@ -32,7 +32,7 @@ premise. CEL has a mature Rust implementation (`cel-interpreter`). See D17/D18.
 | Rust `gateway/` (trusted core) | TypeScript `src/` (orchestration) |
 |---|---|
 | TLS termination, CA + leaf minting | box runner (`box.ts`), docker lockdown |
-| judge + CEL, decision/call log | CLI (`cli.ts`), `vault-sync` |
+| judge + CEL, decision/call log | CLI (`cli.ts`), provider login |
 | vault, OAuth refresh, injection | future supervisor, channels |
 | metering, ledgers, budgets | |
 
@@ -83,7 +83,7 @@ own spec + increments.
 ## Notes
 
 - The rcgen-generated CA replaces the current openssl one; harmless mid-dev
-  (the box trusts whatever `ca.crt` is mounted). One re-`vault-sync` is not
-  needed — the vault is independent of the CA.
+  (the box trusts whatever `ca.crt` is mounted). Existing connections are
+  independent of the CA.
 - Keep the `--mode json` container contract identical so `box.ts` is unaffected
   except for which binary it health-checks and points the proxy at.

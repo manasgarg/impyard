@@ -63,7 +63,7 @@ pub fn providers_file() -> PathBuf {
 }
 
 /// Service connections — one file per connected service (docs/connections.md),
-/// machine-scaffolded by `impyard server connect`, human-owned thereafter.
+/// machine-scaffolded by `impyard connection add`, human-owned thereafter.
 pub fn connections_dir() -> PathBuf {
     config_root().join("connections")
 }

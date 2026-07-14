@@ -614,7 +614,7 @@ async fn exec_discord(imp: &str, payload: &Value) -> Result<Value, String> {
         .filter(|s| !s.trim().is_empty())
         .ok_or("discord-send needs non-empty \"text\"")?;
     let cred = crate::credential::vault::get_credential("discord")
-        .ok_or("no discord credential — run: impyard server vault connect discord")?;
+        .ok_or("no discord credential — run: impyard credential add discord")?;
     let token = cred
         .get("token")
         .and_then(|v| v.as_str())
@@ -654,9 +654,8 @@ async fn exec_slack(imp: &str, payload: &Value) -> Result<Value, String> {
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty());
     let name = slack_credential_name(imp);
-    let cred = crate::credential::vault::get_credential(&name).ok_or_else(|| {
-        format!("no \"{name}\" credential — run: impyard server vault connect slack")
-    })?;
+    let cred = crate::credential::vault::get_credential(&name)
+        .ok_or_else(|| format!("no \"{name}\" credential — run: impyard credential add slack"))?;
     let token = cred
         .get("bot_token")
         .and_then(|v| v.as_str())
@@ -700,7 +699,7 @@ async fn exec_email(imp: &str, payload: &Value) -> Result<Value, String> {
     // No SMTP configured: fail loudly so an email is never silently dropped. The
     // local sink (a file, no real send) is opt-in for offline testing only.
     if std::env::var("IMPYARD_EMAIL_SINK").is_err() {
-        return Err("email not sent: no SMTP configured — run `impyard server vault connect smtp` (e.g. your Mailgun SMTP creds)".into());
+        return Err("email not sent: no SMTP configured — run `impyard credential add smtp` (e.g. your Mailgun SMTP creds)".into());
     }
     let dir = paths::outbox_dir();
     let _ = std::fs::create_dir_all(&dir);

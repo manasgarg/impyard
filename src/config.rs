@@ -64,7 +64,7 @@ pub struct Loaded {
     /// requests the grant's scope allows. Leaking the box env leaks nothing.
     /// Includes the exposures compiled from enabled connections.
     pub exposes: Vec<Expose>,
-    /// Service connections, for `server connections` and the wizard.
+    /// Service connections, for `connection ls` and the wizard.
     pub connections: Vec<Connection>,
     /// Non-fatal conditions (e.g. a disabled connection) — printed by
     /// `validate` and `server start`, never fail-closed.
@@ -366,11 +366,29 @@ fn compile_connection(
         .and_then(|x| x.as_str())
         .unwrap_or_default()
         .to_string();
+    let inject_header = v
+        .get("inject_header")
+        .and_then(|x| x.as_str())
+        .map(str::to_string);
+    let inject_value = v
+        .get("inject_value")
+        .and_then(|x| x.as_str())
+        .map(str::to_string);
+    let inline_inject = match (&inject_header, &inject_value) {
+        (Some(_), Some(_)) => true,
+        (None, None) => false,
+        _ => {
+            errors.push(format!(
+                "{ctx}: inject_header and inject_value must be provided together"
+            ));
+            false
+        }
+    };
     if provider.is_empty() {
         errors.push(format!("{ctx}: needs provider = \"<registry name>\""));
-    } else if !provider_exists(&provider) {
+    } else if !provider_exists(&provider) && !inline_inject {
         errors.push(format!(
-            "{ctx}: unknown provider \"{provider}\" (declare it in providers.toml)"
+            "{ctx}: unknown provider \"{provider}\" (add inject_header + inject_value or declare it in providers.toml)"
         ));
     }
 
@@ -426,7 +444,7 @@ fn compile_connection(
     let enabled = secret_exists(name);
     let connection = Connection {
         name: name.to_string(),
-        provider,
+        provider: provider.clone(),
         imps: imps.clone(),
         hosts: hosts.clone(),
         methods: methods.clone(),
@@ -437,9 +455,12 @@ fn compile_connection(
         // Disabled, not broken: no grant, no exposure, nothing to inject —
         // and the rest of the config keeps working.
         let fix = if name == connection.provider {
-            format!("impyard server connect {name}")
+            format!("impyard connection add {name}")
         } else {
-            format!("impyard server connect {} --as {name}", connection.provider)
+            format!(
+                "impyard connection add {} --name {name}",
+                connection.provider
+            )
         };
         let warning =
             format!("{ctx} is disabled — no \"{name}\" credential in the vault (run: {fix})");
@@ -453,12 +474,16 @@ fn compile_connection(
     let rules = scopes
         .iter()
         .map(|scope| {
+            let mut inject = json!({ "credential": name, "provider": provider });
+            if let (Some(header), Some(value)) = (&inject_header, &inject_value) {
+                inject["headers"] = json!([{ "header": header, "value": value }]);
+            }
             json!({
                 "scope": scope,
                 "name": format!("connection:{name}"),
                 "match": { "host": hosts, "port": 443, "method": methods },
                 "verdict": "allow",
-                "inject": { "credential": name },
+                "inject": inject,
             })
         })
         .collect();
@@ -540,7 +565,7 @@ fn validate_exposes(
         }
         if !credential_exists(&e.credential) {
             errors.push(format!(
-                "[[expose]] {}: no \"{}\" credential in the vault — run: impyard server vault connect",
+                "[[expose]] {}: no \"{}\" credential in the vault — run: impyard credential add <provider>",
                 e.env, e.credential
             ));
         }
@@ -778,6 +803,24 @@ mod tests {
         assert_eq!(exposes[1].scope, "org/kdemo");
         assert_eq!(exposes[1].env, "GH_TOKEN");
         assert!(warning.is_none());
+    }
+
+    #[test]
+    fn generic_connection_carries_its_inline_injection_template() {
+        let v = toml(
+            r#"
+            provider = "acme"
+            scope = "org"
+            hosts = ["api.acme.test"]
+            methods = ["GET", "POST"]
+            env = "ACME_TOKEN"
+            inject_header = "authorization"
+            inject_value = "Bearer {key}"
+        "#,
+        );
+        let (_, rules, _, _) = compile_connection("acme", &v, &[], |_| false, |_| true).unwrap();
+        assert_eq!(rules[0]["inject"]["provider"], "acme");
+        assert_eq!(rules[0]["inject"]["headers"][0]["value"], "Bearer {key}");
     }
 
     #[test]

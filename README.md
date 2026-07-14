@@ -78,12 +78,14 @@ impyard server runs ls           # everything that has run, ever
 To let an imp use a service (GitHub, Slack, Notion, …):
 
 ```bash
-impyard server connect github --imp yuko   # log in once; that's the whole setup
+impyard connection add github --imp yuko   # log in once; that's the whole setup
+# Or connect any token-authenticated API:
+impyard connection add acme --host api.acme.com --imp yuko
 ```
 
-To put an imp in a chat, connect Discord or Slack the same way and add one line
-to its config. It shows up, listens, and answers — with every action it takes
-still going through the same gate.
+To put an imp in a chat, run `impyard credential add discord` (or `slack`) and
+add one line to its config. It shows up, listens, and answers — with every
+action it takes still going through the same gate.
 
 ## Where this is
 

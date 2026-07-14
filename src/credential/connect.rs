@@ -1,4 +1,5 @@
-//! `impyard connect <provider>` — create a credential via the provider's login
+//! `impyard credential add <provider>` — create a credential via the provider's
+//! login flow.
 //! flow (our own implementation). Generalized over the provider registry
 //! (providers.json): api-key providers take a key; OAuth providers run
 //! device-code or PKCE. The result lands in the vault; refresh keeps it alive.
@@ -12,7 +13,7 @@ use std::time::{Duration, Instant};
 
 type BErr = Box<dyn std::error::Error>;
 
-/// The provider list for `vault connect --help`: one line per registered
+/// The provider list for `credential add --help`: one line per registered
 /// provider and what its login flow will ask of you. Best-effort — outside a
 /// impyard root there is no registry, so the help points at where it looks.
 pub fn provider_help() -> String {
@@ -46,16 +47,8 @@ pub fn provider_help() -> String {
         };
         out.push_str(&format!("  {name:width$}  {what}\n"));
     }
-    out.push_str("\nThe credential lands in the vault; tokens are refreshed automatically.");
+    out.push_str("\nThe credential is stored securely; tokens are refreshed automatically.");
     out
-}
-
-/// `vault connect` with no provider: list what's available and how each
-/// login flow works, then point at the usage.
-pub fn list() -> Result<(), BErr> {
-    println!("{}", provider_help());
-    println!("\nusage: impyard server vault connect <provider>");
-    Ok(())
 }
 
 pub async fn run(name: &str) -> Result<(), BErr> {
@@ -109,7 +102,7 @@ pub fn ask(question: &str) -> Result<String, BErr> {
 // ── api-key ──────────────────────────────────────────────────────────────────
 
 fn connect_api_key() -> Result<Value, BErr> {
-    let key = prompt("paste the API key: ")?;
+    let key = prompt_hidden("paste the API key: ")?;
     if key.is_empty() {
         return Err("no key entered".into());
     }
@@ -478,6 +471,7 @@ fn prompt_hidden(question: &str) -> Result<String, BErr> {
 fn set_echo(on: bool) -> bool {
     std::process::Command::new("stty")
         .arg(if on { "echo" } else { "-echo" })
+        .stderr(std::process::Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false)

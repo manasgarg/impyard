@@ -2,8 +2,10 @@
 //! boundary is the trust boundary; TS lives only in the box). The command
 //! grammar is the product thesis — rented intelligence, owned governance:
 //!
-//!   impyard server …   the owned machinery: daemon, config, desk, channels, vault, run log
-//!   impyard imp …   the governed identities: lifecycle, trust, memory, work, sessions
+//!   impyard server …       the owned machinery: daemon, config, desk, channels, run log
+//!   impyard connection …   service capabilities granted to imps
+//!   impyard credential …   host-held provider credentials
+//!   impyard imp …          the governed identities: lifecycle, trust, memory, work, sessions
 
 mod action;
 mod channel;
@@ -36,9 +38,15 @@ struct Cli {
 enum Cmd {
     /// Initialize the deployment: config, data, and state roots (XDG)
     Init,
-    /// The owned machinery: daemon, config, approval desk, channels, vault
+    /// The owned machinery: daemon, config, approval desk, channels, run log
     #[command(subcommand)]
     Server(ServerCmd),
+    /// Service capabilities: discover, add, and inspect connections
+    #[command(subcommand)]
+    Connection(ConnectionCmd),
+    /// Host-held credentials: authenticate providers and inspect what is stored
+    #[command(subcommand)]
+    Credential(CredentialCmd),
     /// The governed identities: lifecycle, trust, memory, knowledge, work
     #[command(subcommand)]
     Imp(ImpCmd),
@@ -70,35 +78,12 @@ enum ServerCmd {
     /// Parse and check all config; print every error (config loads live)
     #[command(alias = "deploy")]
     Validate,
-    /// Connect a service in one step: login, vault, scaffolded connection file
-    Connect {
-        /// Catalog name (bare: list the catalog)
-        service: Option<String>,
-        /// Grant to this imp (repeatable); default is to ask
-        #[arg(long)]
-        imp: Vec<String>,
-        /// Org-wide: every current and future imp (the explicit escalation)
-        #[arg(long)]
-        org: bool,
-        /// Connection/credential name when it differs from the service
-        /// (e.g. --as github-yuko for a per-imp identity)
-        #[arg(long = "as")]
-        alias: Option<String>,
-    },
-    /// Service connections: scope, hosts, env, and whether each is active
-    Connections {
-        #[arg(long)]
-        json: bool,
-    },
     /// The approval desk: list, inspect, approve, deny
     #[command(subcommand)]
     Gates(GatesCmd),
     /// Channel edges: trust designation, response mode, memory settings
     #[command(subcommand)]
     Channel(ChannelCmd),
-    /// Credentials — held on the host, injected in transit; imps never see keys
-    #[command(subcommand)]
-    Vault(VaultCmd),
     /// The run log: every session, whoever it was attributed to
     #[command(subcommand)]
     Runs(RunsCmd),
@@ -155,12 +140,48 @@ enum ChannelCmd {
 }
 
 #[derive(Subcommand)]
-enum VaultCmd {
-    /// Create a credential via a provider's login flow (no argument: list providers)
+enum ConnectionCmd {
+    /// List services available to connect
+    Catalog,
+    /// Connect a service (bare: show the catalog)
+    Add {
+        /// Service from the connection catalog (omit to show the catalog)
+        #[arg(value_name = "SERVICE")]
+        service: Option<String>,
+        /// Grant to this imp (repeatable); default is to ask
+        #[arg(long)]
+        imp: Vec<String>,
+        /// Org-wide: every current and future imp (the explicit escalation)
+        #[arg(long)]
+        org: bool,
+        /// Connection and credential name when it differs from the service
+        #[arg(long)]
+        name: Option<String>,
+        /// Allowed hostname (repeatable; required for services outside the catalog)
+        #[arg(long)]
+        host: Vec<String>,
+        /// Header template, for example: "Authorization: Bearer {token}"
+        #[arg(long)]
+        header: Option<String>,
+        /// Environment variable exposed to the imp (default: <NAME>_TOKEN)
+        #[arg(long)]
+        env: Option<String>,
+        /// Allowed HTTP method (repeatable; default: GET)
+        #[arg(long)]
+        method: Vec<String>,
+    },
+    /// List connections, their scope, and whether they are active
+    Ls {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum CredentialCmd {
+    /// Create or replace a credential via a provider's login flow
     #[command(after_help = credential::connect::provider_help())]
-    Connect { provider: Option<String> },
-    /// Import an existing pi login into the vault
-    Sync,
+    Add { provider: String },
     /// Credential names and types (never values)
     Ls {
         #[arg(long)]
@@ -378,13 +399,6 @@ async fn main() {
             } => cli::server::run(cap, once, no_listen, &addr).await,
             ServerCmd::Status { json } => cli::server::status(json).await,
             ServerCmd::Validate => cli::server::validate(),
-            ServerCmd::Connect {
-                service,
-                imp,
-                org,
-                alias,
-            } => cli::connections::connect(service, imp, org, alias).await,
-            ServerCmd::Connections { json } => cli::connections::ls(json),
             ServerCmd::Gates(cmd) => match cmd {
                 GatesCmd::Ls { json } => cli::gates::ls(json),
                 GatesCmd::Show { id } => cli::gates::show(&id),
@@ -402,20 +416,57 @@ async fn main() {
                     value,
                 } => cli::channel::set(&channel_id, &key, &value),
             },
-            ServerCmd::Vault(cmd) => match cmd {
-                VaultCmd::Connect { provider } => match provider {
-                    Some(provider) => credential::connect::run(&provider).await,
-                    None => credential::connect::list(),
-                },
-                VaultCmd::Sync => cli::vault::run(),
-                VaultCmd::Ls { json } => cli::vault::ls(json),
-            },
             ServerCmd::Runs(cmd) => match cmd {
                 RunsCmd::Ls { imp, limit, json } => cli::runs::ls(imp.as_deref(), limit, json),
                 RunsCmd::Show { run } => cli::runs::show(&run),
                 RunsCmd::Context { run, all } => cli::runs::context(&run, all),
                 RunsCmd::Recall { run } => cli::runs::recall(&run),
             },
+        },
+        Cmd::Connection(cmd) => match cmd {
+            ConnectionCmd::Catalog => cli::connections::catalog(),
+            ConnectionCmd::Add {
+                service,
+                imp,
+                org,
+                name,
+                host,
+                header,
+                env,
+                method,
+            } => match service {
+                Some(service) => {
+                    cli::connections::connect(
+                        service,
+                        cli::connections::ConnectOptions {
+                            imps: imp,
+                            org,
+                            alias: name,
+                            hosts: host,
+                            header,
+                            env,
+                            methods: method,
+                        },
+                    )
+                    .await
+                }
+                None if org
+                    || !imp.is_empty()
+                    || name.is_some()
+                    || !host.is_empty()
+                    || header.is_some()
+                    || env.is_some()
+                    || !method.is_empty() =>
+                {
+                    Err("connection options require a service name".into())
+                }
+                None => cli::connections::catalog(),
+            },
+            ConnectionCmd::Ls { json } => cli::connections::ls(json),
+        },
+        Cmd::Credential(cmd) => match cmd {
+            CredentialCmd::Add { provider } => credential::connect::run(&provider).await,
+            CredentialCmd::Ls { json } => cli::vault::ls(json),
         },
         Cmd::Imp(cmd) => match cmd {
             ImpCmd::Init { name } => cli::create::run(&name),
@@ -491,8 +542,7 @@ fn legacy_pointer(first: &str) -> Option<&'static str> {
         "deploy" => "impyard server validate  (config now loads live — there is no deploy step)",
         "gates" => "impyard server gates <ls|show|approve|deny>",
         "channel" => "impyard server channel <ls|show|trust|untrust|set>",
-        "connect" => "impyard server vault connect <provider>",
-        "vault-sync" => "impyard server vault sync",
+        "connect" => "impyard credential add <provider>",
         "create" => "impyard imp init <name>",
         "queue" => "impyard imp task <add|relay|ls|show|requeue>",
         "relay" => "impyard imp task relay <imp> \"<message>\"",
