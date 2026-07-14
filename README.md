@@ -2,6 +2,7 @@
 
 **Rent the intelligence. Own the governance.**
 
+[![ci](https://github.com/manasgarg/impyard/actions/workflows/ci.yml/badge.svg)](https://github.com/manasgarg/impyard/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-2021-orange.svg)](https://www.rust-lang.org)
 [![status](https://img.shields.io/badge/status-alpha-yellow.svg)](#where-this-is)
