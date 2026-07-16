@@ -244,7 +244,16 @@ async fn connect_once(worker: &str, token: &str) -> Result<(), GwError> {
                         guilds.insert(guild_id, g);
                     }
                     "MESSAGE_CREATE" => handle_message(worker, d, &bot_id, &guilds, token).await,
-                    "INTERACTION_CREATE" => handle_interaction(worker, d, &guilds, &app_id).await,
+                    "INTERACTION_CREATE" => {
+                        // Handle interactions off the read loop: a slow command
+                        // (e.g. an approval that sends email) must not delay the
+                        // NEXT interaction's 3-second deferral deadline.
+                        let (w, aid) = (worker.to_string(), app_id.clone());
+                        let (gs, dd) = (guilds.clone(), d.clone());
+                        tokio::spawn(async move {
+                            handle_interaction(&w, &dd, &gs, &aid).await;
+                        });
+                    }
                     _ => {}
                 }
             }
