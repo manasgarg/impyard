@@ -1194,13 +1194,16 @@ fn print_catalog(registry: &serde_json::Map<String, Value>) -> Result<(), BErr> 
         .collect();
     names.sort();
     let width = names.iter().map(|n| n.len()).max().unwrap_or(0);
+    let mut multi_use: Vec<&str> = vec![];
     for n in &names {
         let p = &registry[n.as_str()];
         let uses = crate::credential::registry::provider_uses(p);
+        let mut placed = 0;
         for (key, _, lines) in groups.iter_mut() {
             if !uses.iter().any(|u| u == key) {
                 continue;
             }
+            placed += 1;
             let what = match *key {
                 "capability" => {
                     let meta = &p["connection"];
@@ -1219,6 +1222,9 @@ fn print_catalog(registry: &serde_json::Map<String, Value>) -> Result<(), BErr> 
             };
             lines.push(format!("  {n:width$}  {what}"));
         }
+        if placed > 1 {
+            multi_use.push(n);
+        }
     }
     for (i, (_, title, lines)) in groups.iter().enumerate() {
         if lines.is_empty() {
@@ -1231,6 +1237,12 @@ fn print_catalog(registry: &serde_json::Map<String, Value>) -> Result<(), BErr> 
         for line in lines {
             println!("{line}");
         }
+    }
+    if !multi_use.is_empty() {
+        println!(
+            "\nOne connection, several uses: {} — add asks which to set up.",
+            multi_use.join(", ")
+        );
     }
     println!("\nConnect one: roster connection add <name> [--worker W].. [--org] [--use U]..");
     println!(
