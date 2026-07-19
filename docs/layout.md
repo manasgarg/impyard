@@ -29,9 +29,10 @@ $XDG_DATA_HOME/roster/         ~/.local/share/roster — durable; THE BACKUP SET
     decisions.jsonl  usage.jsonl  credentials.jsonl  messages.jsonl
 
 $XDG_STATE_HOME/roster/        ~/.local/state/roster — reconstructible/prunable
-  runs/<run-id>/                home/ (the run's $HOME: workspace, session
+  runs/<worker>/<run-id>/       home/ (the run's $HOME: workspace, session
                                 transcript), repos/ (gated-repo clones), self/
-                                (composed read view), context traces
+                                (composed read view), context traces — the
+                                worker mounts its own history ro at self/runs
   identity/                     single-use per-run box tokens
   locks/                        listener locks
   outbox/                       offline email sink (ROSTER_EMAIL_SINK testing)
@@ -59,9 +60,10 @@ Design notes:
   (`[engine] dir` is an optional dev override that mounts a checkout over
   them).
 - **Worker-first data**: a worker's whole footprint is one subtree under
-  `data/workers/<name>/` — export is that subtree plus its spec. Runs stay
-  global (`state/runs/`) because run ids are cross-worker handles; a run's
-  attribution lives in its own record.
+  `data/workers/<name>/` — export is that subtree plus its spec — and its
+  runs are one subtree under `state/runs/<name>/` (run ids stay globally
+  unique, so bare-id commands resolve across workers; pre-migration runs at
+  `state/runs/<run-id>` keep working until `roster migrate` moves them).
 - **Backup story: config + data.** Everything under state can burn.
 - `roster init` creates all three roots (idempotent, never overwrites);
   `roster worker init <name>` scaffolds a worker into config and initializes

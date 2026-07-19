@@ -104,20 +104,25 @@ information-flow property, enforced by provisioning:
 **A gated repo may only be pushed by runs that never contained
 person-data.**
 
-Every run is either **tainted** — it carries interaction content: channel
-sessions, relay tasks, continuations with channel context, anything with
-memory recall — or **clean**: trigger-fired, admin-filed, self-filed, or
-ad-hoc, with a prompt and no participants.
+Every run is either **tainted** — it carries live interaction content:
+channel sessions, relay tasks, continuations with channel context — or
+**clean**: trigger-fired, admin-filed, self-filed, or ad-hoc, with a
+prompt and no participants.
 
-| Run | Gated-repo clones | Memory recall |
-|---|---|---|
-| tainted | read-only, push refused | yes |
-| clean | writable, push granted | none |
+| Run | Gated-repo clones |
+|---|---|
+| tainted | read-only, push refused |
+| clean | writable, push granted |
 
 The model never chooses its privilege; the run's provenance does. The
 enforcement point is the ref write — the push refuses a tainted run —
 backed by the read-only mount. Reading is fine — world→person is the safe
-direction. (The worker's [store](store.md) is deliberately outside this
+direction. Stated honestly: `self/runs/` mounts the worker's raw past
+transcripts into every run, clean ones included, so the mount-level
+guarantee is narrower than it once was — a worker is scoped to trusted
+channels, and that scoping is what makes the trade acceptable. The
+participant scan still checks pushed files against the current run's
+participants. (The worker's [store](store.md) is deliberately outside this
 system: it mounts read-write in every run, and the discretion about what
 lands there is the worker's own.)
 

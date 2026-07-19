@@ -839,6 +839,7 @@ async fn provision_box(
     let self_view = run_dir.join("self");
     std::fs::create_dir_all(self_view.join("config"))?;
     std::fs::create_dir_all(self_view.join("journal"))?;
+    std::fs::create_dir_all(self_view.join("runs"))?;
     std::fs::write(self_view.join("schedule.json"), b"{}")?;
     std::fs::write(self_view.join("journal/journal.jsonl"), b"")?;
     args.extend([
@@ -849,6 +850,17 @@ async fn provision_box(
             "{}:{SELF_MOUNT}/config:ro",
             crate::paths::worker_dir(short).display()
         ),
+    ]);
+    // The worker's complete run history, raw and read-only: transcripts,
+    // compiled prompts, outcomes — every channel it served. A worker is
+    // scoped to channels that can be trusted, so its own record is its to
+    // read. The current run's dir sits inside this bind too: the underlying
+    // files show through live; nested mountpoints appear as empty dirs.
+    let runs = crate::paths::worker_runs_dir(short);
+    std::fs::create_dir_all(&runs)?;
+    args.extend([
+        "-v".into(),
+        format!("{}:{SELF_MOUNT}/runs:ro", runs.display()),
     ]);
     // The journal file sits in the worker's data dir alongside things the box
     // must NOT see (queue, gates, memory.jsonl) — bind the one file, never

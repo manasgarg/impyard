@@ -122,6 +122,10 @@ roster server runs context <run>         # the exact compiled prompts
 roster server runs recall <run>          # why each memory was included
 ```
 
+Each worker mounts its own complete run history read-only at
+`$HOME/self/runs/` — transcripts, compiled prompts, outcomes, raw — so
+"what did I do last week" is a question a worker can answer itself.
+
 A run record answers how the session ended (`done`, `ceiling`, `error`,
 `idle`), its knowledge access and what commit it pushed, what it
 proposed, and what everything cost. The per-worker journal threads the story

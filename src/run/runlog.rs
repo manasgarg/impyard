@@ -82,6 +82,10 @@ fn record_path(run_id: &str) -> PathBuf {
 }
 
 pub fn start(run_id: &str, worker: &str, kind: &str, task_id: Option<&str>) -> Result<(), String> {
+    // The one place a run dir is born: under the worker's own runs dir, so
+    // the whole history mounts per worker. Created BEFORE save so the
+    // run_dir resolver finds it from here on.
+    std::fs::create_dir_all(paths::new_run_dir(worker, run_id)).map_err(|e| e.to_string())?;
     let record = RunRecord {
         id: run_id.to_string(),
         worker: worker.to_string(),
@@ -198,23 +202,40 @@ pub fn list() -> Vec<RunSummary> {
         .collect();
     let journal_workers = crate::worker::journal::run_workers();
     let base = paths::runs_dir();
-    let mut runs: Vec<RunSummary> = std::fs::read_dir(base)
+    // Two layouts coexist: runs/<worker>/<run-id> (current) and runs/<run-id>
+    // (pre-migration history). A top-level entry that is itself a run dir is
+    // legacy; any other directory is a worker's runs dir.
+    let is_run_dir = |path: &Path| {
+        path.is_dir()
+            && (path.join("run.json").exists()
+                || path.join("stdout.jsonl").exists()
+                // one-home layout, and the pre-2026-07 mount triple
+                || path.join("home/session").is_dir()
+                || path.join("session").is_dir()
+                || path.join("workspace").is_dir())
+    };
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(base).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if is_run_dir(&path) {
+            candidates.push(path);
+        } else if path.is_dir() {
+            for child in std::fs::read_dir(&path).into_iter().flatten().flatten() {
+                let child = child.path();
+                if is_run_dir(&child) {
+                    candidates.push(child);
+                }
+            }
+        }
+    }
+    let mut runs: Vec<RunSummary> = candidates
         .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|entry| {
-            let path = entry.path();
-            path.is_dir()
-                && (path.join("run.json").exists()
-                    || path.join("stdout.jsonl").exists()
-                    // one-home layout, and the pre-2026-07 mount triple
-                    || path.join("home/session").is_dir()
-                    || path.join("session").is_dir()
-                    || path.join("workspace").is_dir())
-        })
-        .filter_map(|entry| {
-            let id = entry.file_name().to_string_lossy().to_string();
-            summarize(&entry.path(), by_run.get(&id), journal_workers.get(&id))
+        .filter_map(|path| {
+            let id = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            summarize(&path, by_run.get(&id), journal_workers.get(&id))
         })
         .collect();
     runs.sort_by(
@@ -488,6 +509,44 @@ pub fn one_line(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn per_worker_run_dirs_create_resolve_and_list_beside_legacy() {
+        let _guard = crate::statefile::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("ROSTER_ROOT", dir.path());
+
+        // New runs are born under runs/<worker>/ and resolve by id alone.
+        start("2026-07-19-10-00-00-aaaa", "yuko", "task", None).unwrap();
+        assert_eq!(
+            paths::run_dir("2026-07-19-10-00-00-aaaa"),
+            paths::worker_runs_dir("yuko").join("2026-07-19-10-00-00-aaaa")
+        );
+        assert_eq!(
+            load("2026-07-19-10-00-00-aaaa").unwrap().worker,
+            "yuko"
+        );
+
+        // A pre-migration global run dir still resolves and lists.
+        let legacy = paths::runs_dir().join("2026-07-01-00-00-00-bbbb");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(
+            legacy.join("run.json"),
+            serde_json::json!({
+                "id": "2026-07-01-00-00-00-bbbb", "worker": "kdemo", "kind": "task",
+                "state": "done", "started_at": "2026-07-01T00:00:00Z"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(paths::run_dir("2026-07-01-00-00-00-bbbb"), legacy);
+
+        let ids: Vec<String> = list().into_iter().map(|r| r.id).collect();
+        assert!(ids.contains(&"2026-07-19-10-00-00-aaaa".to_string()), "{ids:?}");
+        assert!(ids.contains(&"2026-07-01-00-00-00-bbbb".to_string()), "{ids:?}");
+    }
 
     #[test]
     fn parses_modern_run_id_timestamp() {

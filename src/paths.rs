@@ -213,8 +213,33 @@ pub fn runs_dir() -> PathBuf {
     state_root().join("runs")
 }
 
+/// One worker's complete run history — the box mounts this read-only at
+/// `$HOME/self/runs` (a worker is scoped to channels that can be trusted,
+/// so its own raw record — transcripts included — is its to read).
+pub fn worker_runs_dir(worker: &str) -> PathBuf {
+    runs_dir().join(short_worker(worker))
+}
+
+/// Where a NEW run's dir is created. `runlog::start` is the only creator;
+/// everything else resolves through `run_dir`.
+pub fn new_run_dir(worker: &str, run_id: &str) -> PathBuf {
+    worker_runs_dir(worker).join(run_id)
+}
+
+/// Resolve an existing run's dir: the per-worker layout
+/// (`runs/<worker>/<run-id>`), falling back to the pre-2026-07 global
+/// layout (`runs/<run-id>`) for history `roster migrate` hasn't moved.
 pub fn run_dir(run_id: &str) -> PathBuf {
-    runs_dir().join(run_id)
+    let root = runs_dir();
+    if let Ok(entries) = std::fs::read_dir(&root) {
+        for e in entries.flatten() {
+            let cand = e.path().join(run_id);
+            if cand.is_dir() {
+                return cand;
+            }
+        }
+    }
+    root.join(run_id)
 }
 
 /// Ephemeral per-run box identity tokens (proxy credentials → subject).

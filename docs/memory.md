@@ -28,6 +28,10 @@ What people can see and change: the store is on the host
 files directly, and the snapshot rotation (`roster worker restore`)
 covers them like everything else in the store.
 
+The worker's raw run history (transcripts, prompts, outcomes) is also
+readable at `$HOME/self/runs/` — memory is what the worker distills;
+`self/runs/` is the undigested record it can always go back to.
+
 Runs still record **provenance** — which provider, channel, and user a
 run served (`run-context.json` in the run dir). That powers the taint
 rule and the participant scan; it is attribution, not memory.

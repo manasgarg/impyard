@@ -317,6 +317,41 @@ pub fn migrate() -> Result<(), BErr> {
             );
         }
     }
+    // Move pre-worker-layout run dirs under their worker's runs dir, so the
+    // full history shows up in the box mount — not just runs made after the
+    // upgrade. Attribution comes from run.json; unattributed dirs stay put.
+    let mut moved = 0usize;
+    for entry in std::fs::read_dir(crate::paths::runs_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let path = entry.path();
+        let Some(id) = path.file_name().map(|n| n.to_string_lossy().to_string()) else {
+            continue;
+        };
+        let record: Option<serde_json::Value> = std::fs::read_to_string(path.join("run.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok());
+        let Some(worker) = record
+            .as_ref()
+            .and_then(|r| r.get("worker").or_else(|| r.get("imp")))
+            .and_then(|v| v.as_str())
+            .map(crate::paths::short_worker)
+            .filter(|w| c.workers.iter().any(|k| k == w))
+        else {
+            continue;
+        };
+        let dest_dir = crate::paths::worker_runs_dir(worker);
+        std::fs::create_dir_all(&dest_dir)?;
+        let dest = dest_dir.join(&id);
+        if !dest.exists() && std::fs::rename(&path, &dest).is_ok() {
+            moved += 1;
+        }
+    }
+    if moved > 0 {
+        println!("moved {moved} run dir(s) into per-worker run history (state/runs/<worker>/)");
+    }
     // The box's repo_push tool submits the "repo-push" intent; a deployment
     // granted only "knowledge-push" should add the new name too.
     let has_repo_push = c.actions.actions.iter().any(|a| a.name == "repo-push");

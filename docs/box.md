@@ -65,14 +65,17 @@ $HOME                      rw   fresh every run: workspace/, session/, dotfiles
 │                               (ro or rw per grant; gated repos appear as
 │                               per-run clones — see repos.md)
 ├── self/                  ro   the worker's own footprint: config/, identity,
-│                               schedule.json, journal/ — edits via actions only
+│                               schedule.json, journal/, and runs/ — its complete
+│                               raw run history — edits via actions only
 └── channel/               ro   the active channel's history and files, when
-                                the run serves one — the only per-channel mount
+                                the run serves one
 ```
 
 Plus the CA certificates (read-only) and nothing else of the deployment:
 not the vault, not org.toml, not the audit logs, not any other worker's
-footprint, not any other channel's history. `$HOME` itself is ephemeral
+footprint, not any other channel's live history. (`self/runs/` transcripts
+do span every channel this worker has served — a worker is scoped to
+channels that can be trusted, so its own record is its to read.) `$HOME` itself is ephemeral
 **by design** — a run cannot plant a `.bashrc` or `.gitconfig` for a
 future run to execute; only `store/` persists, and nothing in it
 auto-executes.
