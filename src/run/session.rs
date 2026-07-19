@@ -60,6 +60,7 @@ async fn ensure_server(interactive: bool) -> Result<(), BErr> {
     if !interactive {
         return Err("the server isn't running — start it: roster server start".into());
     }
+    crate::util::sane_line_discipline();
     eprint!("the server isn't running — start it now? [y/N] ");
     use std::io::Write;
     let _ = std::io::stderr().flush();
@@ -75,15 +76,22 @@ async fn ensure_server(interactive: bool) -> Result<(), BErr> {
         .create(true)
         .append(true)
         .open(&log_path)?;
-    // Its own process group: Ctrl-C in talk must not take the daemon down.
+    // Its own session, no controlling terminal: Ctrl-C in talk must not take
+    // the daemon down, and nothing under the daemon may ever touch this
+    // shell's tty.
     use std::os::unix::process::CommandExt;
-    std::process::Command::new(std::env::current_exe()?)
-        .args(["server", "start"])
+    let mut cmd = std::process::Command::new(std::env::current_exe()?);
+    cmd.args(["server", "start"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(log.try_clone()?))
-        .stderr(std::process::Stdio::from(log))
-        .process_group(0)
-        .spawn()?;
+        .stderr(std::process::Stdio::from(log));
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    cmd.spawn()?;
     eprintln!("starting server (log: {}) …", log_path.display());
     for _ in 0..40 {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -194,6 +202,20 @@ fn stdin_termios() -> Option<libc::termios> {
     }
 }
 
+/// Puts the snapshot back when dropped, so every exit path — error returns
+/// and panics included — hands the shell back its line discipline.
+struct TermiosGuard(Option<libc::termios>);
+
+impl Drop for TermiosGuard {
+    fn drop(&mut self) {
+        if let Some(t) = self.0.take() {
+            unsafe {
+                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+            }
+        }
+    }
+}
+
 /// Drain a channel of display text into a writer — the writer differs by
 /// surface (readline's above-prompt printer, or plain stdout when piped).
 fn spawn_sink<F: FnMut(String) + Send + 'static>(
@@ -299,7 +321,7 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
     }
     mark_seen(&channel_id);
 
-    let saved_termios = stdin_termios();
+    let termios_guard = TermiosGuard(stdin_termios());
     let (line_tx, mut line_rx) = tokio::sync::mpsc::channel::<String>(32);
     let (info_tx, info_rx) = tokio::sync::mpsc::channel::<String>(32);
 
@@ -493,11 +515,7 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
     let _ = info_sink.await;
     // The editor thread may still hold readline's raw mode; hand the shell
     // back its line discipline before leaving through it.
-    if let Some(t) = saved_termios {
-        unsafe {
-            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
-        }
-    }
+    drop(termios_guard);
     eprintln!("\nleft the conversation — resume: roster talk {worker}");
     Ok(())
 }

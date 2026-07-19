@@ -22,6 +22,30 @@ pub fn resolve_prefix<'a>(
     }
 }
 
+/// Interactive line reads need a sane line discipline: canonical mode, echo,
+/// CR→NL, signals. A raw-mode program that died without restoring the terminal
+/// (a readline session, an editor) leaves Enter arriving as a bare CR — echoed
+/// as ^M, never ending the line — so every prompt would hang. Self-heal before
+/// reading instead. No-op when stdin isn't a tty.
+pub fn sane_line_discipline() {
+    unsafe {
+        if libc::isatty(libc::STDIN_FILENO) != 1 {
+            return;
+        }
+        let mut t: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(libc::STDIN_FILENO, &mut t) != 0 {
+            return;
+        }
+        let (iflag, oflag, lflag) = (t.c_iflag, t.c_oflag, t.c_lflag);
+        t.c_iflag |= libc::ICRNL;
+        t.c_oflag |= libc::OPOST;
+        t.c_lflag |= libc::ICANON | libc::ECHO | libc::ISIG;
+        if (t.c_iflag, t.c_oflag, t.c_lflag) != (iflag, oflag, lflag) {
+            let _ = libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+        }
+    }
+}
+
 pub fn now_rfc3339() -> String {
     time::OffsetDateTime::now_utc()
         .format(&Rfc3339)
