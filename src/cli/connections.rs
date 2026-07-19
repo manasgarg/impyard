@@ -867,8 +867,8 @@ fn declare_oauth(name: &str) -> Result<(), BErr> {
 
 // ── inventory ────────────────────────────────────────────────────────────────
 
-/// The availability edges, human-readable: "org-wide", "yuko, kdemo",
-/// "yuko (servers 1)" — each restricted edge carries a compact dim count.
+/// The availability edges, human-readable: "org-wide", "dobby, kdemo",
+/// "dobby (servers 1)" — each restricted edge carries a compact dim count.
 fn grants_summary(
     grants: &std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<String>>>,
 ) -> String {
@@ -1972,13 +1972,13 @@ mod tests {
     #[test]
     fn legacy_grants_migrate_and_edges_upsert_and_remove() {
         // workers + [restrict] → per-worker edges carrying the shared scope.
-        let text = "# keep me\nprovider = \"discord\"\nworkers = [\"yuko\", \"kdemo\"]\n\
+        let text = "# keep me\nprovider = \"discord\"\nworkers = [\"dobby\", \"kdemo\"]\n\
                     hosts = [\"discord.com\"]\nenv = \"D\"\n\n[restrict]\nservers = [\"999\"]\n";
         let migrated = migrate_legacy_grants(text).unwrap().unwrap();
         assert!(migrated.contains("# keep me"));
         assert!(!migrated.contains("workers ="));
         assert!(!migrated.contains("[restrict]"));
-        assert!(migrated.contains("[grant.yuko]\nservers = [\"999\"]"));
+        assert!(migrated.contains("[grant.dobby]\nservers = [\"999\"]"));
         assert!(migrated.contains("[grant.kdemo]\nservers = [\"999\"]"));
         // Already-migrated text is a no-op.
         assert!(migrate_legacy_grants(&migrated).unwrap().is_none());
@@ -1986,19 +1986,19 @@ mod tests {
         // Upsert replaces an edge in place; remove drops it whole.
         let mut scope = EdgeScope::new();
         scope.insert("channels".into(), vec!["1".into(), "2".into()]);
-        let (out, replaced) = upsert_grant_edge(&migrated, "yuko", &scope).unwrap();
+        let (out, replaced) = upsert_grant_edge(&migrated, "dobby", &scope).unwrap();
         assert!(replaced);
-        assert!(out.contains("[grant.yuko]\nchannels = [\"1\", \"2\"]"));
+        assert!(out.contains("[grant.dobby]\nchannels = [\"1\", \"2\"]"));
         assert!(out.contains("[grant.kdemo]\nservers = [\"999\"]"));
         let out = remove_grant_edge(&out, "kdemo").unwrap();
         assert!(!out.contains("[grant.kdemo]"));
-        assert!(out.contains("[grant.yuko]"));
+        assert!(out.contains("[grant.dobby]"));
         assert!(remove_grant_edge(&out, "kdemo").is_err());
     }
 
     #[test]
     fn channel_binding_removal_is_surgical() {
-        let text = "name = \"yuko\"\n\n[channels]\ndiscord = \"discord\"\nslack = \"slack\"\n\n\
+        let text = "name = \"dobby\"\n\n[channels]\ndiscord = \"discord\"\nslack = \"slack\"\n\n\
                     [[budget.limit]]\ncurrency = \"model_calls\"\nwindow = \"day\"\nmax = 5000\n";
         let (out, platform) = remove_channel_binding(text, "discord").unwrap();
         assert_eq!(platform, "discord");
@@ -2010,23 +2010,23 @@ mod tests {
 
     #[test]
     fn binding_inserts_under_an_existing_channels_table() {
-        let text = "name = \"yuko\"\n\n[channels]\ndiscord = \"discord\"\n";
+        let text = "name = \"dobby\"\n\n[channels]\ndiscord = \"discord\"\n";
         let out = upsert_channel_binding(text, "slack", "slack")
             .unwrap()
             .unwrap();
         assert_eq!(
             out,
-            "name = \"yuko\"\n\n[channels]\nslack = \"slack\"\ndiscord = \"discord\"\n"
+            "name = \"dobby\"\n\n[channels]\nslack = \"slack\"\ndiscord = \"discord\"\n"
         );
     }
 
     #[test]
     fn binding_appends_the_table_when_absent() {
-        let text = "name = \"yuko\"\nheartbeat = \"30m\"\n";
-        let out = upsert_channel_binding(text, "discord", "disc-yuko")
+        let text = "name = \"dobby\"\nheartbeat = \"30m\"\n";
+        let out = upsert_channel_binding(text, "discord", "disc-dobby")
             .unwrap()
             .unwrap();
-        assert!(out.ends_with("[channels]\ndiscord = \"disc-yuko\"\n"));
+        assert!(out.ends_with("[channels]\ndiscord = \"disc-dobby\"\n"));
         assert!(toml::from_str::<toml::Value>(&out).is_ok());
     }
 

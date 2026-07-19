@@ -519,14 +519,14 @@ mod tests {
         std::env::set_var("ROSTER_ROOT", dir.path());
 
         // New runs are born under runs/<worker>/ and resolve by id alone.
-        start("2026-07-19-10-00-00-aaaa", "yuko", "task", None).unwrap();
+        start("2026-07-19-10-00-00-aaaa", "dobby", "task", None).unwrap();
         assert_eq!(
             paths::run_dir("2026-07-19-10-00-00-aaaa"),
-            paths::worker_runs_dir("yuko").join("2026-07-19-10-00-00-aaaa")
+            paths::worker_runs_dir("dobby").join("2026-07-19-10-00-00-aaaa")
         );
         assert_eq!(
             load("2026-07-19-10-00-00-aaaa").unwrap().worker,
-            "yuko"
+            "dobby"
         );
 
         // A pre-migration global run dir still resolves and lists.
@@ -578,7 +578,7 @@ mod tests {
     fn legacy_run_records_with_removed_artifact_fields_still_parse() {
         let record: RunRecord = serde_json::from_value(serde_json::json!({
             "id": "run-1",
-            "worker": "yuko",
+            "worker": "dobby",
             "kind": "task",
             "state": "done",
             "started_at": "2026-01-01T00:00:00Z",

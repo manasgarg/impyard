@@ -13,7 +13,7 @@ are two **uses** of one `slack` connection
 ## Setup
 
 ```bash
-roster connection add discord --worker yuko     # or: slack
+roster connection add discord --worker dobby     # or: slack
 ```
 
 Discord takes the bot token. Slack takes two: the bot token (`xoxb-…`) and
@@ -22,7 +22,7 @@ The wizard offers to write the binding into the worker's spec (that's what
 `--worker` answers); it lands as:
 
 ```toml
-# workers/yuko/worker.toml
+# workers/dobby/worker.toml
 [channels]
 discord = "discord"     # the vault secret its bot uses
 slack   = "slack"
@@ -52,7 +52,7 @@ recovered.
 
 The worker's `[grant.<worker>]` edge on the Discord connection limits
 where it exists: list `servers` (guild ids) and/or `channels` (channel
-ids) — `roster connection grant discord yuko --restrict servers=…` writes
+ids) — `roster connection grant discord dobby --restrict servers=…` writes
 it — and the listener treats everything outside the scope as if it didn't
 exist: not answered, not persisted, no commands registered there — while
 the gateway restricts API calls to the same scope

@@ -33,9 +33,9 @@ and model secrets are consumed host-side only.
 roster connection catalog
 roster connection add                       # bare: the guided session
 roster connection add github                # login → vault → scaffold (granted to no one yet)
-roster connection add github --worker yuko  # add + grant in one breath
+roster connection add github --worker dobby  # add + grant in one breath
 roster connection add anthropic             # login → vault → grant report
-roster connection add slack --worker yuko   # one login, channel AND capability
+roster connection add slack --worker dobby   # one login, channel AND capability
 roster connection add github --org          # org-wide, spelled out
 roster connection add github --name github-kdemo --worker kdemo
 ```
@@ -46,10 +46,10 @@ availability act: it makes the connection usable by a worker, and the
 restriction rides on the edge:
 
 ```bash
-roster connection grant github yuko                          # unrestricted edge
-roster connection grant discord yuko --restrict servers=999  # scoped edge
+roster connection grant github dobby                          # unrestricted edge
+roster connection grant discord dobby --restrict servers=999  # scoped edge
 roster connection grant github --org                         # fleet-wide edge
-roster connection revoke discord yuko                        # withdraw the edge
+roster connection revoke discord dobby                        # withdraw the edge
 ```
 
 `add --worker` / `add --org` are sugar for add-then-grant; bare `add`
@@ -130,7 +130,7 @@ a service grants the service, not a verb subset), and an env var derived
 from the name:
 
 ```bash
-roster connection add acme --host api.acme.com --worker yuko
+roster connection add acme --host api.acme.com --worker dobby
 ```
 
 Override the defaults for APIs with different conventions — `--method`
@@ -142,7 +142,7 @@ roster connection add gitlab-internal \
   --header 'Private-Token: {token}' \
   --env GITLAB_TOKEN \
   --method GET \
-  --worker yuko
+  --worker dobby
 ```
 
 ## Unknown services: the interview
@@ -193,7 +193,7 @@ kind = "host-dir"
 path = "/home/you/shared-notes"
 mode = "ro"                   # or "rw"
 
-[grant.yuko]                  # membership only — mounts have no dimensions
+[grant.dobby]                  # membership only — mounts have no dimensions
 ```
 
 ```toml
@@ -231,7 +231,7 @@ provider = "discord"
 env      = "DISCORD_TOKEN"
 hosts    = ["discord.com"]
 
-[grant.yuko]
+[grant.dobby]
 servers  = ["1015381923845"]      # a guild id
 channels = ["1451951375079"]      # and/or specific channel ids
 
@@ -240,7 +240,7 @@ channels = ["1521178264683"]      # kdemo's own, narrower slice
 ```
 
 `[grant.org]` is the fleet-wide edge; a worker's own edge wins over it.
-The CLI writes these for you (`roster connection grant discord yuko
+The CLI writes these for you (`roster connection grant discord dobby
 --restrict servers=…`), and the edit is live either way. A worker with no
 edge gets nothing: the listener drops its guild traffic and no rules
 compile. (The pre-edge form — `workers = [..]`/`scope = "org"` with one

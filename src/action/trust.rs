@@ -112,7 +112,7 @@ mod tests {
         // all internal → auto
         assert_eq!(
             evaluate(
-                "org/yuko",
+                "org/dobby",
                 "email-send",
                 &json!({"to":["a@ourco.com","b@ourco.com"]}),
                 "gate",
@@ -125,7 +125,7 @@ mod tests {
         // one external → predicate fails → default gate
         assert_eq!(
             evaluate(
-                "org/yuko",
+                "org/dobby",
                 "email-send",
                 &json!({"to":["a@ourco.com","x@evil.com"]}),
                 "gate",
@@ -141,7 +141,7 @@ mod tests {
     fn default_when_no_rule_matches() {
         assert_eq!(
             evaluate(
-                "org/yuko",
+                "org/dobby",
                 "discord-send",
                 &json!({}),
                 "gate",
@@ -152,7 +152,7 @@ mod tests {
             "gate"
         );
         assert_eq!(
-            evaluate("org/yuko", "message-user", &json!({}), "auto", &[], 0, 0),
+            evaluate("org/dobby", "message-user", &json!({}), "auto", &[], 0, 0),
             "auto"
         );
     }
@@ -169,7 +169,7 @@ mod tests {
         // plain address, and "Name <addr>" form, both auto
         assert_eq!(
             evaluate(
-                "org/yuko",
+                "org/dobby",
                 "email-send",
                 &json!({"to":["manasgarg@gmail.com"]}),
                 "gate",
@@ -181,7 +181,7 @@ mod tests {
         );
         assert_eq!(
             evaluate(
-                "org/yuko",
+                "org/dobby",
                 "email-send",
                 &json!({"to":["Manas Garg <manasgarg@gmail.com>"]}),
                 "gate",
@@ -194,7 +194,7 @@ mod tests {
         // a different address still gates
         assert_eq!(
             evaluate(
-                "org/yuko",
+                "org/dobby",
                 "email-send",
                 &json!({"to":["Someone <other@gmail.com>"]}),
                 "gate",
@@ -236,19 +236,19 @@ mod tests {
         }];
         let p = json!({"to":["x@out.com"]});
         assert_eq!(
-            evaluate("org/yuko", "email-send", &p, "gate", &rs, 0, 0),
+            evaluate("org/dobby", "email-send", &p, "gate", &rs, 0, 0),
             "gate"
         ); // none yet
         assert_eq!(
-            evaluate("org/yuko", "email-send", &p, "gate", &rs, 2, 0),
+            evaluate("org/dobby", "email-send", &p, "gate", &rs, 2, 0),
             "gate"
         ); // under threshold
         assert_eq!(
-            evaluate("org/yuko", "email-send", &p, "gate", &rs, 3, 0),
+            evaluate("org/dobby", "email-send", &p, "gate", &rs, 3, 0),
             "auto"
         ); // reached
         assert_eq!(
-            evaluate("org/yuko", "email-send", &p, "gate", &rs, 9, 1),
+            evaluate("org/dobby", "email-send", &p, "gate", &rs, 9, 1),
             "gate"
         ); // a denial revokes it
     }

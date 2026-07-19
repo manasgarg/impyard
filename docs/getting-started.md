@@ -62,10 +62,10 @@ else is still default-deny.
 ## Scaffold a worker
 
 ```bash
-roster worker init yuko
+roster worker init dobby
 ```
 
-Creates `workers/yuko/` in config (its spec and `identity.md`) and its
+Creates `workers/dobby/` in config (its spec and `identity.md`) and its
 knowledge repository in data. Edit `identity.md` — who this worker is, its
 job, its standing rules. Identity shapes behavior; it can never grant
 capability (that's what grants, actions, and trust are for).
@@ -76,7 +76,7 @@ capability (that's what grants, actions, and trust are for).
 roster server validate    # parse + check all config, print every error
 roster server start &     # the one daemon: gateway + dispatch + listeners
 
-roster worker run yuko "find three recent papers on X and summarize them"
+roster worker run dobby "find three recent papers on X and summarize them"
 roster server runs ls     # everything that has run
 roster server runs show <run>      # what it did, saw, proposed, cost
 ```
@@ -112,9 +112,9 @@ journalctl --user -u roster-server -f
 ## Connect a service
 
 ```bash
-roster connection add github --worker yuko     # log in once; that's the setup
+roster connection add github --worker dobby     # log in once; that's the setup
 # or any token-authenticated API:
-roster connection add acme --host api.acme.com --worker yuko
+roster connection add acme --host api.acme.com --worker dobby
 ```
 
 One command produces the whole chain: credential in the vault, egress grant
@@ -146,10 +146,10 @@ automatically — see [actions-and-trust.md](actions-and-trust.md).
 ## Put it in a chat
 
 ```bash
-roster connection add discord --worker yuko       # or: slack
+roster connection add discord --worker dobby       # or: slack
 ```
 
-The wizard writes the binding into `workers/yuko/worker.toml`:
+The wizard writes the binding into `workers/dobby/worker.toml`:
 
 ```toml
 [channels]

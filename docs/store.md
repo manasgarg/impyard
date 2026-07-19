@@ -46,9 +46,9 @@ same disk, inside the data root. Disk loss remains what your backup of
 state is snapshotted before it is overwritten:
 
 ```bash
-roster worker restore yuko --list          # available snapshots
-roster worker restore yuko                 # newest
-roster worker restore yuko --from 20260719-104432.512
+roster worker restore dobby --list          # available snapshots
+roster worker restore dobby                 # newest
+roster worker restore dobby --from 20260719-104432.512
 ```
 
 ## Concurrency between instances

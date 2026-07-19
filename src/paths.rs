@@ -45,8 +45,8 @@ pub fn state_root() -> PathBuf {
     base("XDG_STATE_HOME", ".local/state", "state")
 }
 
-/// A worker handle may arrive as a bare name ("yuko") or a subject
-/// ("org/yuko"); directories are keyed by the bare name.
+/// A worker handle may arrive as a bare name ("dobby") or a subject
+/// ("org/dobby"); directories are keyed by the bare name.
 pub fn short_worker(worker: &str) -> &str {
     worker.rsplit('/').next().unwrap_or(worker)
 }
@@ -297,7 +297,7 @@ mod tests {
     /// Worker paths accept both bare names and subjects.
     #[test]
     fn worker_handles_normalize() {
-        assert_eq!(worker_data_dir("yuko"), worker_data_dir("org/yuko"));
-        assert_eq!(worker_queue_dir("org/yuko").file_name().unwrap(), "queue");
+        assert_eq!(worker_data_dir("dobby"), worker_data_dir("org/dobby"));
+        assert_eq!(worker_queue_dir("org/dobby").file_name().unwrap(), "queue");
     }
 }

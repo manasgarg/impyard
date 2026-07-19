@@ -1422,26 +1422,26 @@ mod tests {
         let v = toml(
             r#"
             provider = "github"
-            workers = ["yuko", "kdemo"]
+            workers = ["dobby", "kdemo"]
             hosts = ["api.github.com"]
             env = "GH_TOKEN"
         "#,
         );
-        let workers = vec!["yuko".to_string(), "kdemo".to_string()];
+        let workers = vec!["dobby".to_string(), "kdemo".to_string()];
         let (c, rules, exposes, warning) =
             compile_connection("github", &v, &workers, |_| true, |_| true, |_| None, |_| Vec::new()).unwrap();
         assert!(c.enabled);
         assert_eq!(c.methods, vec!["*"]); // the default: full access
         assert_eq!(rules.len(), 2);
-        // Edges compile in name order (kdemo, yuko) — one rule per worker.
-        assert_eq!(rules[0]["scope"], "org/kdemo");
-        assert_eq!(rules[1]["scope"], "org/yuko");
+        // Edges compile in name order (dobby, kdemo) — one rule per worker.
+        assert_eq!(rules[0]["scope"], "org/dobby");
+        assert_eq!(rules[1]["scope"], "org/kdemo");
         assert_eq!(rules[0]["name"], "connection:github");
         assert_eq!(rules[0]["match"]["host"][0], "api.github.com");
         assert_eq!(rules[0]["inject"]["credential"], "github");
         assert_eq!(exposes.len(), 2);
-        assert_eq!(exposes[1].scope, "org/yuko");
-        assert_eq!(exposes[1].env, "GH_TOKEN");
+        assert_eq!(exposes[0].scope, "org/dobby");
+        assert_eq!(exposes[0].env, "GH_TOKEN");
         assert!(warning.is_none());
     }
 
@@ -1499,7 +1499,7 @@ mod tests {
         let v = toml(
             r#"
             provider = "discord"
-            workers = ["yuko"]
+            workers = ["dobby"]
             hosts = ["discord.com"]
             env = "DISCORD_TOKEN"
             [restrict]
@@ -1516,15 +1516,15 @@ mod tests {
         let (c, rules, _, _) = compile_connection(
             "discord",
             &v,
-            &["yuko".to_string()],
+            &["dobby".to_string()],
             |_| true,
             |_| true,
             |_| None,
             dims,
         )
         .unwrap();
-        assert!(c.allows_surface("yuko", None, "111"));
-        assert!(!c.allows_surface("yuko", None, "333"));
+        assert!(c.allows_surface("dobby", None, "111"));
+        assert!(!c.allows_surface("dobby", None, "333"));
         // No edge for kdemo: nothing is admitted, not everything.
         assert!(!c.allows_surface("kdemo", None, "111"));
         // allow 111, allow 222, deny unscoped channels, deny guilds, broad allow
@@ -1541,7 +1541,7 @@ mod tests {
         let v = toml(
             r#"
             provider = "discord"
-            workers = ["yuko"]
+            workers = ["dobby"]
             hosts = ["discord.com"]
             env = "DISCORD_TOKEN"
             [restrict]
@@ -1551,15 +1551,15 @@ mod tests {
         let (c, rules, _, _) = compile_connection(
             "discord",
             &v,
-            &["yuko".to_string()],
+            &["dobby".to_string()],
             |_| true,
             |_| true,
             |_| None,
             dims,
         )
         .unwrap();
-        assert!(c.allows_surface("yuko", Some("999"), "any-channel"));
-        assert!(!c.allows_surface("yuko", Some("998"), "any-channel"));
+        assert!(c.allows_surface("dobby", Some("999"), "any-channel"));
+        assert!(!c.allows_surface("dobby", Some("998"), "any-channel"));
         assert!(rules
             .iter()
             .all(|r| r["name"] != "connection:discord:deny-unscoped-channels"));
@@ -1579,7 +1579,7 @@ mod tests {
             provider = "discord"
             hosts = ["discord.com"]
             env = "DISCORD_TOKEN"
-            [grant.yuko]
+            [grant.dobby]
             servers = ["999"]
             [grant.kdemo]
             channels = ["111"]
@@ -1588,7 +1588,7 @@ mod tests {
         let (c, rules, exposes, _) = compile_connection(
             "discord",
             &v,
-            &["yuko".to_string(), "kdemo".to_string()],
+            &["dobby".to_string(), "kdemo".to_string()],
             |_| true,
             |_| true,
             |_| None,
@@ -1596,14 +1596,14 @@ mod tests {
         )
         .unwrap();
         // Each worker's edge is its own scope — no bleed between them.
-        assert!(c.allows_surface("yuko", Some("999"), "x"));
+        assert!(c.allows_surface("dobby", Some("999"), "x"));
         assert!(!c.allows_surface("kdemo", Some("999"), "x"));
         assert!(c.allows_surface("kdemo", None, "111"));
-        assert!(!c.allows_surface("yuko", None, "111"));
+        assert!(!c.allows_surface("dobby", None, "111"));
         // Rules and exposures land per edge, in the worker's scope.
         assert!(rules
             .iter()
-            .any(|r| r["scope"] == "org/yuko" && r["match"]["pathPrefix"] == "/api/v10/guilds/999"));
+            .any(|r| r["scope"] == "org/dobby" && r["match"]["pathPrefix"] == "/api/v10/guilds/999"));
         assert!(rules
             .iter()
             .any(|r| r["scope"] == "org/kdemo"
@@ -1638,23 +1638,23 @@ mod tests {
         let (c, rules, exposes, _) =
             compile_connection("discord", &v, &[], |_| true, |_| true, |_| None, dims).unwrap();
         assert!(c.grants.is_empty() && rules.is_empty() && exposes.is_empty());
-        assert!(!c.applies_to("yuko"));
+        assert!(!c.applies_to("dobby"));
 
         // Mixing syntaxes is an error, and so is an unknown worker.
         let v = toml(
             r#"
             provider = "discord"
-            workers = ["yuko"]
+            workers = ["dobby"]
             hosts = ["discord.com"]
             env = "DISCORD_TOKEN"
-            [grant.yuko]
+            [grant.dobby]
             servers = ["999"]
         "#,
         );
         let errors = compile_connection(
             "discord",
             &v,
-            &["yuko".to_string()],
+            &["dobby".to_string()],
             |_| true,
             |_| true,
             |_| None,
@@ -1709,14 +1709,14 @@ mod tests {
             kind = "host-dir"
             path = "{}"
             mode = "rw"
-            workers = ["yuko"]
+            workers = ["dobby"]
         "#,
             dir.path().display()
         ));
         let (m, warns) =
-            compile_host_mount("notes", "host-dir", &v, &["yuko".to_string()]).unwrap();
+            compile_host_mount("notes", "host-dir", &v, &["dobby".to_string()]).unwrap();
         assert_eq!(m.kind, HostMountKind::Dir { rw: true });
-        assert!(m.applies_to("yuko") && !m.applies_to("kdemo"));
+        assert!(m.applies_to("dobby") && !m.applies_to("kdemo"));
         assert!(warns[0].contains("does not back up"));
 
         // ro is the default and warns about nothing
@@ -1801,7 +1801,7 @@ mod tests {
         let errors = compile_connection(
             "acme",
             &v,
-            &["yuko".to_string()],
+            &["dobby".to_string()],
             |p| p == "github",
             |_| true,
             |_| None,

@@ -10,7 +10,7 @@ kind  = "host-repo"
 path  = "/home/you/research-kb.git"   # a bare repository
 write = "gated"                       # or "ro" (the default)
 
-[grant.yuko]
+[grant.dobby]
 ```
 
 A `ro` repo simply mounts read-only at `$HOME/mnt/<name>`. A **gated**

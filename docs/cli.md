@@ -80,8 +80,8 @@ overwrites what exists.
 ## `roster talk`
 
 Your terminal as a chat channel — the Discord/Slack interaction model
-without leaving the shell. `roster talk yuko` opens (or resumes) the durable
-channel `term-<you>-yuko`: trusted like a DM, history recorded under
+without leaving the shell. `roster talk dobby` opens (or resumes) the durable
+channel `term-<you>-dobby`: trusted like a DM, history recorded under
 `data/channels/`, a purpose the worker can propose, channel and user memory
 scopes, and warm-session turns. Replies print straight to your terminal;
 Ctrl-D ends the session immediately. `--idle SECS` (default 300) ends it
@@ -200,5 +200,5 @@ log. See [memory.md](memory.md).
 repository; from there, use ordinary git:
 
 ```bash
-git -C "$(roster worker knowledge yuko)" log --oneline
+git -C "$(roster worker knowledge dobby)" log --oneline
 ```

@@ -243,9 +243,9 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("ROSTER_ROOT", dir.path());
-        let p = provision("yuko").unwrap();
+        let p = provision("dobby").unwrap();
         assert!(p.join(".locks").is_dir());
-        let p2 = provision("org/yuko").unwrap();
+        let p2 = provision("org/dobby").unwrap();
         assert_eq!(p, p2, "org/ prefix resolves to the same store");
     }
 
@@ -264,10 +264,10 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("ROSTER_ROOT", dir.path());
-        let store = provision("yuko").unwrap();
+        let store = provision("dobby").unwrap();
 
         std::fs::write(store.join("notes.md"), "v1").unwrap();
-        let first = snapshot("yuko", None, 5).unwrap().expect("first snapshot");
+        let first = snapshot("dobby", None, 5).unwrap().expect("first snapshot");
         assert!(first.changes >= 1);
         assert_eq!(
             std::fs::read_to_string(first.dir.join("notes.md")).unwrap(),
@@ -276,21 +276,21 @@ mod tests {
         assert!(!first.dir.join(".locks").exists(), "locks are not content");
 
         // Unchanged store → no new snapshot piles up.
-        assert!(snapshot("yuko", None, 5).unwrap().is_none());
+        assert!(snapshot("dobby", None, 5).unwrap().is_none());
 
         // Different length: rsync's quick-check (size+mtime, second
         // granularity — the standard backup trade-off) must see the change
         // even when the test runs sub-second.
         std::fs::write(store.join("notes.md"), "v2 with more text").unwrap();
-        let second = snapshot("yuko", None, 5).unwrap().expect("second snapshot");
+        let second = snapshot("dobby", None, 5).unwrap().expect("second snapshot");
         assert_eq!(second.changes, 1);
-        assert_eq!(list_snapshots("yuko").len(), 2);
+        assert_eq!(list_snapshots("dobby").len(), 2);
 
         // Restore the older state by name; the pre-restore state is
         // auto-snapshotted, so the restore itself is undoable.
-        let older = list_snapshots("yuko").pop().unwrap();
+        let older = list_snapshots("dobby").pop().unwrap();
         std::fs::write(store.join("notes.md"), "wrecked-by-a-bad-run").unwrap();
-        let (from, undo) = restore("yuko", Some(&older)).unwrap();
+        let (from, undo) = restore("dobby", Some(&older)).unwrap();
         assert!(from.ends_with(&older));
         assert!(undo.is_some(), "wrecked state was preserved for undo");
         assert_eq!(
@@ -301,11 +301,11 @@ mod tests {
 
         // keep=1 prunes history down to the newest.
         std::fs::write(store.join("notes.md"), "v3").unwrap();
-        snapshot("yuko", None, 1).unwrap().expect("third snapshot");
-        assert_eq!(list_snapshots("yuko").len(), 1);
+        snapshot("dobby", None, 1).unwrap().expect("third snapshot");
+        assert_eq!(list_snapshots("dobby").len(), 1);
 
         // keep=0 disables the pass entirely.
         std::fs::write(store.join("notes.md"), "v4").unwrap();
-        assert!(snapshot("yuko", None, 0).unwrap().is_none());
+        assert!(snapshot("dobby", None, 0).unwrap().is_none());
     }
 }

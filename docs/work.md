@@ -12,7 +12,7 @@ is a task.)
 
 ## How work arrives
 
-- **You file it**: `roster worker task add yuko "…"`. Owner-standing work
+- **You file it**: `roster worker task add dobby "…"`. Owner-standing work
   always runs, budget or no budget.
 - **The heartbeat fires.** Every worker has a system recurring template —
   on by default, tuned with `heartbeat = "30m"` in its spec (`"off"`
@@ -101,7 +101,7 @@ holds a push credential either way.
 ## Reorganization tasks
 
 ```bash
-roster worker task add yuko "reorganize the knowledge repo around topics"
+roster worker task add dobby "reorganize the knowledge repo around topics"
 ```
 
 Restructuring knowledge is an ordinary task now: every clean run gets its
@@ -115,7 +115,7 @@ record. Run ids are timestamps with a random suffix
 (`2026-07-10-21-51-17-a3b3`); any unique prefix works in commands.
 
 ```bash
-roster server runs ls --worker yuko
+roster server runs ls --worker dobby
 roster server runs show 2026-07-10       # transcript, journal, knowledge
                                           # commits, files, how it ended
 roster server runs context <run>         # the exact compiled prompts

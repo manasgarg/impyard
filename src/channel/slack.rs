@@ -639,7 +639,7 @@ mod tests {
         assert!(is_slack_channel_id("D0DMDMDMD"));
         assert!(is_slack_channel_id("G0GROUPID"));
         assert!(!is_slack_channel_id("1451951375079571628")); // discord
-        assert!(!is_slack_channel_id("term-manas-yuko"));
+        assert!(!is_slack_channel_id("term-manas-dobby"));
         assert!(!is_slack_channel_id("C")); // a bare prefix is not an id
     }
 

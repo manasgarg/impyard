@@ -172,7 +172,7 @@ Worker overlays allowed, like `[context]`.
 ## workers/\<name\>/worker.toml
 
 ```toml
-name = "yuko"                # must equal the folder name
+name = "dobby"                # must equal the folder name
 
 [channels]
 discord = "discord"          # vault credential for its bot (also: slack = "…")
@@ -203,7 +203,7 @@ stem is the vault credential name.
 | key | required | meaning |
 |---|---|---|
 | `provider` | yes | registry entry (login flow + inject template), or any name if inline inject is given |
-| `[grant.<worker>]` | no | availability edge, one per worker (`[grant.org]` = fleet-wide); its keys scope the edge to provider dimensions. None = connected, granted to no one. Legacy `workers = ["yuko"]` / `scope = "org"` + `[restrict]` still parse as identical edges |
+| `[grant.<worker>]` | no | availability edge, one per worker (`[grant.org]` = fleet-wide); its keys scope the edge to provider dimensions. None = connected, granted to no one. Legacy `workers = ["dobby"]` / `scope = "org"` + `[restrict]` still parse as identical edges |
 | `hosts` | yes | allowed hostnames |
 | `methods` | no (default `["*"]` — all) | allowed HTTP methods; list verbs (e.g. `["GET"]`) to narrow the grant |
 | `env` | yes | the sentinel env var the box sees |

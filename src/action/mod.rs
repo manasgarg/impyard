@@ -1167,10 +1167,10 @@ mod tests {
         // A minimal deployment that config::load() accepts.
         std::fs::create_dir_all(crate::paths::config_root()).unwrap();
         std::fs::write(crate::paths::org_file(), "").unwrap();
-        std::fs::create_dir_all(crate::paths::worker_dir("yuko")).unwrap();
+        std::fs::create_dir_all(crate::paths::worker_dir("dobby")).unwrap();
         std::fs::write(
-            crate::paths::worker_dir("yuko").join("worker.toml"),
-            "name = \"yuko\"\n",
+            crate::paths::worker_dir("dobby").join("worker.toml"),
+            "name = \"dobby\"\n",
         )
         .unwrap();
         (guard, dir)
@@ -1186,25 +1186,25 @@ mod tests {
     #[test]
     fn file_update_cas_accepts_stales_and_reverts() {
         let _sb = sandbox();
-        let path = crate::paths::worker_dir("yuko").join("worker.toml");
+        let path = crate::paths::worker_dir("dobby").join("worker.toml");
 
         // Correct hash lands the edit.
         let ok = exec_file_update(
-            "org/yuko",
-            &json!({ "path": "config/worker.toml", "base_hash": sha("name = \"yuko\"\n"),
-                     "content": "name = \"yuko\" # edited\n" }),
+            "org/dobby",
+            &json!({ "path": "config/worker.toml", "base_hash": sha("name = \"dobby\"\n"),
+                     "content": "name = \"dobby\" # edited\n" }),
         )
         .unwrap();
         assert_eq!(ok["status"], "ok");
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            "name = \"yuko\" # edited\n"
+            "name = \"dobby\" # edited\n"
         );
 
         // A stale hash is a clean conflict, not a write.
         let err = exec_file_update(
-            "org/yuko",
-            &json!({ "path": "config/worker.toml", "base_hash": sha("name = \"yuko\"\n"),
+            "org/dobby",
+            &json!({ "path": "config/worker.toml", "base_hash": sha("name = \"dobby\"\n"),
                      "content": "clobber\n" }),
         )
         .unwrap_err();
@@ -1212,15 +1212,15 @@ mod tests {
 
         // An edit that breaks config validation is reverted.
         let err = exec_file_update(
-            "org/yuko",
-            &json!({ "path": "config/worker.toml", "base_hash": sha("name = \"yuko\" # edited\n"),
+            "org/dobby",
+            &json!({ "path": "config/worker.toml", "base_hash": sha("name = \"dobby\" # edited\n"),
                      "content": "not = valid = toml\n" }),
         )
         .unwrap_err();
         assert!(err.contains("reverted"), "{err}");
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            "name = \"yuko\" # edited\n"
+            "name = \"dobby\" # edited\n"
         );
 
         // Paths with their own write channels are refused by name.
@@ -1230,7 +1230,7 @@ mod tests {
             ("journal/journal.jsonl", "not worker-editable"),
         ] {
             let err = exec_file_update(
-                "org/yuko",
+                "org/dobby",
                 &json!({ "path": p, "base_hash": "x", "content": "y" }),
             )
             .unwrap_err();

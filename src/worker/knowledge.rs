@@ -1050,7 +1050,7 @@ mod tests {
         let clone = dir.join("box-clone");
         clone_repo(&repo, &clone).unwrap();
         run_git(&clone, &["checkout", "-q", "-b", "run/test"]).unwrap();
-        run_git(&clone, &["config", "user.name", "yuko"]).unwrap();
+        run_git(&clone, &["config", "user.name", "dobby"]).unwrap();
         run_git(&clone, &["config", "user.email", "y@y"]).unwrap();
         (repo, clone)
     }
@@ -1175,7 +1175,7 @@ mod tests {
         clone_repo(&repo, &other).unwrap();
         run_git(&other, &["checkout", "-q", "HEAD~1"]).unwrap();
         run_git(&other, &["checkout", "-q", "-b", "run/other"]).unwrap();
-        run_git(&other, &["config", "user.name", "yuko"]).unwrap();
+        run_git(&other, &["config", "user.name", "dobby"]).unwrap();
         run_git(&other, &["config", "user.email", "y@y"]).unwrap();
         let stale_head = commit_file(&other, "notes/second.md", "# Second\n", "add second");
         let error = land(&repo, &other, &stale_head, false).unwrap_err();
@@ -1230,16 +1230,16 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("ROSTER_ROOT", dir.path());
-        std::fs::create_dir_all(dir.path().join("config/workers/yuko")).unwrap();
+        std::fs::create_dir_all(dir.path().join("config/workers/dobby")).unwrap();
         std::fs::write(
-            dir.path().join("config/workers/yuko/worker.toml"),
-            "name = \"yuko\"\n",
+            dir.path().join("config/workers/dobby/worker.toml"),
+            "name = \"dobby\"\n",
         )
         .unwrap();
 
-        initialize("yuko").unwrap();
-        crate::run::runlog::start("run1", "yuko", "task", None).unwrap();
-        let storage = provision("yuko", "run1", false).unwrap();
+        initialize("dobby").unwrap();
+        crate::run::runlog::start("run1", "dobby", "task", None).unwrap();
+        let storage = provision("dobby", "run1", false).unwrap();
         let co = storage.repos.first().unwrap();
         assert_eq!(co.connection, "knowledge");
         assert!(co.writable);
@@ -1274,13 +1274,13 @@ mod tests {
             ],
         )
         .unwrap();
-        let outcome = push("yuko", "run1", "knowledge", &head, false).unwrap();
+        let outcome = push("dobby", "run1", "knowledge", &head, false).unwrap();
         assert_eq!((outcome.files, outcome.deletions), (1, 0));
-        assert_eq!(head_of(&canonical_repo("yuko")).unwrap(), head);
+        assert_eq!(head_of(&canonical_repo("dobby")).unwrap(), head);
 
         // A second run provisioned earlier goes stale, rebases, lands.
-        crate::run::runlog::start("run2", "yuko", "task", None).unwrap();
-        let storage2 = provision("yuko", "run2", false).unwrap();
+        crate::run::runlog::start("run2", "dobby", "task", None).unwrap();
+        let storage2 = provision("dobby", "run2", false).unwrap();
         let co2 = storage2.repos.first().unwrap();
         // Pretend run2 cloned before run1 landed: rewind its view of main.
         let old_main = run_git(&co2.path, &["rev-list", "--max-parents=0", "HEAD"]).unwrap();
@@ -1305,7 +1305,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let error = push("yuko", "run2", "knowledge", &stale_head, false).unwrap_err();
+        let error = push("dobby", "run2", "knowledge", &stale_head, false).unwrap_err();
         assert!(error.contains("stale"), "{error}");
         // Rebase against the canonical repo (in the box this is the ro mount).
         run_git_owned(
@@ -1313,7 +1313,7 @@ mod tests {
             vec![
                 "fetch".into(),
                 "--quiet".into(),
-                canonical_repo("yuko").display().to_string(),
+                canonical_repo("dobby").display().to_string(),
                 "main:refs/remotes/origin/main".into(),
             ],
         )
@@ -1334,23 +1334,23 @@ mod tests {
             ],
         )
         .unwrap();
-        push("yuko", "run2", "knowledge", &rebased, false).unwrap();
-        assert_eq!(head_of(&canonical_repo("yuko")).unwrap(), rebased);
+        push("dobby", "run2", "knowledge", &rebased, false).unwrap();
+        assert_eq!(head_of(&canonical_repo("dobby")).unwrap(), rebased);
 
         // Leftover uncommitted work parks on a quarantine ref; the next run's
         // briefing source sees it.
         std::fs::write(co2.path.join("topics/unfinished.md"), "wip\n").unwrap();
         backstop(co2);
-        let parked = parked_runs("yuko");
+        let parked = parked_runs("dobby");
         assert_eq!(parked.len(), 1);
         assert_eq!(parked[0].0, "knowledge");
         assert!(parked[0].1.ends_with("run-run2"), "{}", parked[0].1);
 
         // A tainted run under clean-room gets a read-only clone; push refuses.
-        crate::run::runlog::start("run3", "yuko", "task", None).unwrap();
-        let storage3 = provision("yuko", "run3", true).unwrap();
+        crate::run::runlog::start("run3", "dobby", "task", None).unwrap();
+        let storage3 = provision("dobby", "run3", true).unwrap();
         assert!(!storage3.repos.first().unwrap().writable);
-        let error = push("yuko", "run3", "knowledge", &rebased, false).unwrap_err();
+        let error = push("dobby", "run3", "knowledge", &rebased, false).unwrap_err();
         assert!(error.contains("read-only"), "{error}");
 
         std::env::remove_var("ROSTER_ROOT");
