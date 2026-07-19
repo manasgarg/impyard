@@ -164,10 +164,9 @@ pub struct ContextPolicy {
     pub purpose_max_chars: usize,
     pub briefing_max_chars: usize,
     pub task_max_chars: usize,
-    /// Recent channel messages injected into a fresh session's first turn —
-    /// enough to catch the drift, deliberately small. 0 disables the block.
-    /// Anything deeper the worker loads itself from the mounted record
-    /// ($HOME/channel/messages.jsonl).
+    /// Recent channel messages injected into a fresh session's first turn.
+    /// 0 disables the block. Anything deeper the worker loads itself from
+    /// the mounted record ($HOME/channel/messages.jsonl).
     pub history_max_messages: usize,
     pub history_max_chars: usize,
 }
@@ -180,7 +179,7 @@ impl Default for ContextPolicy {
             purpose_max_chars: 8_000,
             briefing_max_chars: 4_000,
             task_max_chars: 24_000,
-            history_max_messages: 5,
+            history_max_messages: 25,
             history_max_chars: 6_000,
         }
     }
