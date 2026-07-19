@@ -223,6 +223,58 @@ Derived, deliberately not stored:
   record with no surface field is a singleton-era record whose channel
   *is* its surface.
 
+## CLI surface
+
+The command tree is where the concept model reaches the operator: the
+top-level nouns and the `after_help` glossaries are the model as taught.
+Changes, in decreasing conceptual weight:
+
+1. **`channel` graduates to a top-level noun.** Today `roster server
+   channel …` frames a channel as daemon runtime state — something that
+   appears when a listener sees traffic. Once operators author channels
+   (link them, name them) and channels own stores, a channel is an entity
+   the way a worker or connection is, and the grammar should say so:
+   `roster channel ls|show|trust|untrust|set|link|unlink`.
+   `server channel` stays as a hidden alias (precedent: the retired
+   `credential` noun pointing at `connection`).
+2. **`link` / `unlink` are the concept-carrying verbs.** `link` takes
+   *surface* ids and produces a *channel* — the first place the
+   surface/channel split reaches the operator's hands. Everything else
+   about the split stays invisible until someone links.
+3. **`ls` / `show` learn the model.** `channel ls` prints one row per
+   logical channel — singleton rows look exactly like today's — with
+   WHERE summarizing surfaces. `show` gains a members block (per-surface
+   provider, class, native id) and a store line. `describe()`
+   (`src/cli/channel.rs:15`) is surface logic wearing a channel name
+   today; it becomes the Surface entity's display.
+4. **The `--restrict` dim renames: `channels=` → `surfaces=`.** The grant
+   edge restricts surfaces; keeping the old dim name while "channel"
+   means the logical entity would bake the vocabulary collision into the
+   one place scope is authored. Ids and classes mix
+   (`--restrict surfaces=public,dm`, `--restrict surfaces=111,222`);
+   `channels=` keeps parsing as a compat alias; the flag's help example
+   gains a class.
+5. **Surface-id resolution is a teaching moment.** `trust` / `set` /
+   `show` accept a surface id and resolve it to its parent channel,
+   saying so — "surface 123… belongs to channel manas; trusting manas."
+   The typo guard in `set_trust` (`src/cli/channel.rs:89`) becomes
+   channel-aware.
+6. **`worker restore` gains a target.** The bare form keeps today's
+   meaning (the global store); `--channel <id>` restores that
+   conversation's store.
+7. **Attribution and glossaries.** `server runs` shows channel *and*
+   surface where they differ — provenance made visible. The `server` and
+   `worker` glossaries gain *surface*, *channel*, and *channel store*;
+   the `talk` banner names the channel and its member surfaces when the
+   terminal surface is part of a group — otherwise linking silently
+   changes what `talk` opens into.
+
+Unchanged on purpose: `connection add/rm/ls`, approvals, worker
+lifecycle, `server start/status/validate` syntax. The clean-room reframe
+is nearly CLI-invisible — nothing under `src/cli/` prints "taint" today;
+its surface is journal/denial text and, optionally, `connection ls`
+showing a host-repo's write contract.
+
 ## Sequencing sketch
 
 Each stage lands alone and leaves the system coherent:
@@ -232,12 +284,15 @@ Each stage lands alone and leaves the system coherent:
    Pure reframe — no behavior change beyond scan-skip and per-connection
    policy.
 2. **Scope classes** (decisions 1–4): registry vocabulary, grant parsing,
-   listener admission, gateway consultation of the type map.
+   listener admission, gateway consultation of the type map. CLI: the
+   `surfaces=` dim rename with the `channels=` alias.
 3. **The channel entity** (decisions 5–7, 13): singleton channels made
    explicit, `channel link`, re-keying of history/purpose/trust/sessions,
-   merge-on-link.
+   merge-on-link. CLI: the top-level `channel` noun, `link`/`unlink`,
+   the new `ls`/`show`, surface-id resolution, runs attribution,
+   glossaries, the `talk` banner.
 4. **Channel stores** (decisions 9–11): mount, snapshot coverage,
-   provisioning rule, briefing update.
+   provisioning rule, briefing update. CLI: `worker restore --channel`.
 5. **Reply routing** (decision 8): per-turn reply directive in the
    briefing.
 
