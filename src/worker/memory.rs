@@ -3,11 +3,106 @@
 //! gated repos read-only, and the participant scan (worker/boundary.rs) keys
 //! off these identifiers. Interaction memory itself lives in the worker's
 //! store (`store/memory/`, docs/store.md), owned and organized by the worker;
-//! the host keeps no memory machinery.
+//! the host's only machinery is recall — a bounded, advisory window into
+//! that file compiled into each run's input ([memory] in org.toml).
 
 use crate::paths;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
 use std::path::PathBuf;
+
+/// Recall bounds for the memory block ([memory] in org.toml, worker
+/// overlays allowed). Recall is a convenience window, not an access
+/// control: every run mounts the whole store anyway. Unknown keys in the
+/// table are ignored.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MemoryPolicy {
+    pub enabled: bool,
+    pub recall_max_notes: usize,
+    pub recall_char_budget: usize,
+}
+
+impl Default for MemoryPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            recall_max_notes: 20,
+            recall_char_budget: 6_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CompiledMemoryPolicy {
+    #[serde(default)]
+    pub default: MemoryPolicy,
+    #[serde(default)]
+    pub workers: HashMap<String, MemoryPolicy>,
+}
+
+pub fn load_policy(worker: &str) -> MemoryPolicy {
+    let compiled = crate::config::snapshot()
+        .map(|c| c.memory.clone())
+        .unwrap_or_default();
+    compiled
+        .workers
+        .get(worker.strip_prefix("org/").unwrap_or(worker))
+        .cloned()
+        .unwrap_or(compiled.default)
+}
+
+/// The worker's active memory notes, rank order: pinned first, then newest.
+/// Reads `store/memory/memory.jsonl` fresh on every call — a note written
+/// mid-session is eligible next turn. The file is the worker's own (its runs
+/// append and edit it directly); the host only reads.
+pub fn recall_notes(worker: &str) -> Vec<Value> {
+    let path = paths::worker_store_dir(paths::short_worker(worker))
+        .join("memory")
+        .join("memory.jsonl");
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    active_notes(&text)
+}
+
+/// Parse + filter + rank a memory.jsonl. A later record with the same id
+/// supersedes an earlier one (the worker's own update convention); retired
+/// notes (`forgotten`/`disabled` flags, or a `forget` op) drop out.
+fn active_notes(text: &str) -> Vec<Value> {
+    let mut by_id: HashMap<String, usize> = HashMap::new();
+    let mut notes: Vec<Option<Value>> = Vec::new();
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        match v.get("id").and_then(Value::as_str).map(String::from) {
+            Some(id) => match by_id.get(&id) {
+                Some(&slot) => notes[slot] = Some(v),
+                None => {
+                    by_id.insert(id, notes.len());
+                    notes.push(Some(v));
+                }
+            },
+            None => notes.push(Some(v)),
+        }
+    }
+    let mut out: Vec<Value> = notes
+        .into_iter()
+        .flatten()
+        .filter(|v| {
+            v.get("op").and_then(Value::as_str) != Some("forget")
+                && v.get("forgotten").and_then(Value::as_bool) != Some(true)
+                && v.get("disabled").and_then(Value::as_bool) != Some(true)
+                && v.get("note").and_then(Value::as_str).is_some_and(|s| !s.is_empty())
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        let pinned = |v: &Value| v.get("pinned").and_then(Value::as_bool) == Some(true);
+        let ts = |v: &Value| v.get("ts").and_then(Value::as_str).unwrap_or("").to_string();
+        pinned(b).cmp(&pinned(a)).then(ts(b).cmp(&ts(a)))
+    });
+    out
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]

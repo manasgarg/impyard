@@ -222,20 +222,6 @@ async fn submit(worker: &str, trusted_run_id: &str, body: &[u8]) -> Response<Bod
         );
     };
     let grant = grant.clone();
-    if grant.executor == "note" && trusted_run_id.is_empty() {
-        journal::append(
-            worker,
-            &run_id,
-            "action-refused",
-            json!({ "intent": env.intent, "reason": "run-scoped action has no trusted run context" }),
-        );
-        audit(worker, &env.intent, "refused", None, None);
-        return reply(
-            StatusCode::FORBIDDEN,
-            json!({ "status": "denied", "reason": "run-scoped action has no trusted run context" }),
-        );
-    }
-
     journal::append(
         worker,
         &run_id,

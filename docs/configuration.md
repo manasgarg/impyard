@@ -66,8 +66,10 @@ wake_on_resolve = true       # file a continuation task when the gate resolves
 ```
 
 Executors: `message-user`, `email`, `identity`, `purpose`,
-`discord`, `slack`, `task`, `note`, `knowledge`. An intent with no grant is
+`discord`, `slack`, `task`, `term`, `knowledge`. An intent with no grant is
 refused, not gated. See [actions-and-trust.md](actions-and-trust.md).
+(Memory has no executor: the worker writes `store/memory/` directly —
+[memory.md](memory.md).)
 
 ### `[[trust]]` — the ladder
 
@@ -137,6 +139,19 @@ Mandatory blocks fail rather than truncate; see [context.md](context.md).
 turn carries (newest kept, oldest dropped; `0` disables it) — history
 truncates rather than fails, since the full record stays readable at
 `$HOME/channel`.
+
+### `[memory]` — recall bounds
+
+| key | default | meaning |
+|---|---|---|
+| `enabled` | `true` | compile the memory block at all |
+| `recall_max_notes` | 20 | active notes recalled per run (pinned first, then newest) |
+| `recall_char_budget` | 6000 | rendered block cap; oldest unpinned drop first |
+
+Recall is a bounded window into the worker's own
+`store/memory/memory.jsonl` ([memory.md](memory.md)) — the worker writes
+and curates the file; the host only reads it into each run's input.
+Worker overlays allowed, like `[context]`.
 
 ### `[knowledge]`
 

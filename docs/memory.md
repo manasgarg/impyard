@@ -2,13 +2,18 @@
 
 A worker's memory of people and conversations lives in its own
 [store](store.md), under `store/memory/` — plain files the worker reads,
-writes, and organizes itself. The host keeps no memory machinery: nothing
-is recalled into prompts by the host, no note store is host-owned, and
-there are no memory actions. The briefing teaches the practice instead:
-consult your memory when a person or place rings familiar, record what
-deserves keeping, organize it however serves you, and carry person-facts
-with discretion — what someone tells you in a private conversation is not
-material for another room.
+writes, and organizes itself. There are no memory actions and no
+host-owned note store; the host's one piece of machinery is **recall**: a
+bounded window into the worker's own `store/memory/memory.jsonl`,
+compiled into every run's input as an advisory block (pinned notes first,
+then newest; `[memory]` in org.toml bounds it —
+[configuration.md](configuration.md)). A note whose record carries
+`forgotten`, `disabled`, or `op: "forget"` drops out of recall; a later
+record with the same `id` supersedes the earlier one. The policy text
+teaches the practice: consult your memory when a person or place rings
+familiar, record what deserves keeping, organize it however serves you,
+and carry person-facts with discretion — what someone tells you in a
+private conversation is not material for another room.
 
 Two structural facts shape how memory behaves:
 

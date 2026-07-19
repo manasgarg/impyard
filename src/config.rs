@@ -14,6 +14,7 @@ use crate::gateway::budget::BudgetPolicy;
 use crate::gateway::schema::Policy;
 use crate::paths;
 use crate::worker::context::{CompiledContextPolicy, ContextPolicy};
+use crate::worker::memory::{CompiledMemoryPolicy, MemoryPolicy};
 use crate::worker::storage::{CompiledStoragePolicy, StoragePolicy};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -217,6 +218,7 @@ pub struct Loaded {
     /// disables). The TMS keeps each worker's system template in line.
     pub heartbeats: std::collections::HashMap<String, String>,
     pub context: CompiledContextPolicy,
+    pub memory: CompiledMemoryPolicy,
     pub storage: CompiledStoragePolicy,
     /// (worker, platform, vault credential) — `server start` starts one
     /// listener each. Platforms: "discord", "slack".
@@ -274,11 +276,16 @@ pub fn load() -> Result<Loaded, Vec<String>> {
         errors.push(format!("org.toml [context]: {e}"));
         ContextPolicy::default()
     });
+    let default_memory = memory_policy(org.get("memory"), None).unwrap_or_else(|e| {
+        errors.push(format!("org.toml [memory]: {e}"));
+        MemoryPolicy::default()
+    });
     let default_storage = storage_policy(&org, None).unwrap_or_else(|e| {
         errors.push(format!("org.toml [knowledge]: {e}"));
         StoragePolicy::default()
     });
     let mut worker_context = std::collections::HashMap::new();
+    let mut worker_memory = std::collections::HashMap::new();
     let mut worker_storage = std::collections::HashMap::new();
 
     warn_rule_shape(&org, "org.toml", &mut errors);
@@ -367,6 +374,12 @@ pub fn load() -> Result<Loaded, Vec<String>> {
                     worker_context.insert(name.clone(), p);
                 }
                 Err(e) => errors.push(format!("{name} [context]: {e}")),
+            }
+            match memory_policy(w.get("memory"), Some(&default_memory)) {
+                Ok(p) => {
+                    worker_memory.insert(name.clone(), p);
+                }
+                Err(e) => errors.push(format!("{name} [memory]: {e}")),
             }
             match storage_policy(&w, Some(&default_storage)) {
                 Ok(storage) => {
@@ -582,6 +595,10 @@ pub fn load() -> Result<Loaded, Vec<String>> {
         context: CompiledContextPolicy {
             default: default_context,
             workers: worker_context,
+        },
+        memory: CompiledMemoryPolicy {
+            default: default_memory,
+            workers: worker_memory,
         },
         storage: CompiledStoragePolicy {
             default: default_storage,
@@ -1297,6 +1314,17 @@ fn context_policy(
         merge_json(&mut merged, to_json(value));
     }
     serde_json::from_value(merged).map_err(|e| format!("context policy is invalid: {e}").into())
+}
+
+fn memory_policy(
+    value: Option<&toml::Value>,
+    base: Option<&MemoryPolicy>,
+) -> Result<MemoryPolicy, BErr> {
+    let mut merged = serde_json::to_value(base.cloned().unwrap_or_default())?;
+    if let Some(value) = value {
+        merge_json(&mut merged, to_json(value));
+    }
+    serde_json::from_value(merged).map_err(|e| format!("memory policy is invalid: {e}").into())
 }
 
 
