@@ -268,11 +268,15 @@ keeps the default.
 On the gateway side, a surface-id restriction compiles to path predicates
 on the Discord API (allow the scoped channels, deny the rest). Classes
 can't compile statically — a URL doesn't reveal a channel's class — so
-they are enforced at the listener, and while a class is in scope the
-gateway stays broad on the `/channels` family; a servers-only restriction
-has the same shape (Discord channel endpoints don't carry the guild id).
-Stated honestly: for class scopes, "can speak there" is enforced at
-attachment and "can act there" is not yet narrowed at the gateway.
+they compile to a dynamic predicate: the judge reads the listener's
+recorded classification of the channel named in the path, and a channel
+the listener never classified matches nothing (fail closed — the deny
+behind it wins). Both enforcement points read one classification, so
+"can speak there" and "can act there" stay aligned; the same rule keeps
+DM sends working under an id-only scope (DMs admitted by default). The
+one remaining broad spot is a servers-scoped grant: Discord channel
+endpoints don't carry the guild id, so there the listener's attachment
+rule is the enforcement and the gateway stays wide on `/channels`.
 
 There is no universal scope language: a provider declares its dimensions
 in the registry, and they compile down to the two enforcement points that

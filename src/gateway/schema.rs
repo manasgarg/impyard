@@ -47,6 +47,12 @@ pub struct Match {
     pub method: Option<OneOrMany<String>>,
     #[serde(rename = "pathPrefix")]
     pub path_prefix: Option<String>,
+    /// The surface-class predicate (docs/plans/channel-semantics.md): the
+    /// channel id named in the path must be classified (by the listener, in
+    /// channel meta) as one of these classes. An unclassified or unnamed
+    /// channel matches nothing — fail closed, the deny behind this rule wins.
+    #[serde(rename = "channelClassIn")]
+    pub channel_class_in: Option<Vec<String>>,
     #[serde(rename = "headerContains")]
     pub header_contains: Option<HashMap<String, String>>,
     #[serde(rename = "maxBodySize")]

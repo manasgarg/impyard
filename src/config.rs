@@ -933,20 +933,21 @@ fn compile_connection(
         if provider == "discord" && !restrict.is_empty() {
             // Class entries (public/private/dm) can't compile to static path
             // predicates — a URL doesn't reveal a channel's class — so they
-            // are listener-enforced and the gateway stays broad for the
-            // /channels family whenever a class is in scope (same known
-            // limit as servers-only restrictions).
+            // compile to a channelClassIn rule the judge evaluates against
+            // the listener's recorded classification, failing closed on
+            // channels the listener never classified.
             let surface_ids: Vec<&String> = restrict
                 .get("surfaces")
                 .into_iter()
                 .flatten()
                 .filter(|s| SurfaceClass::parse(s).is_none())
                 .collect();
-            let has_classes = restrict
+            let classes: Vec<&String> = restrict
                 .get("surfaces")
                 .into_iter()
                 .flatten()
-                .any(|s| SurfaceClass::parse(s).is_some());
+                .filter(|s| SurfaceClass::parse(s).is_some())
+                .collect();
             for id in &surface_ids {
                 rules.push(json!({
                     "scope": scope,
@@ -967,7 +968,27 @@ fn compile_connection(
                     "inject": inject,
                 }));
             }
-            if !surface_ids.is_empty() && !has_classes && !restrict.contains_key("servers") {
+            // A surfaces restriction without a servers dim narrows the
+            // /channels family: named classes admit their surfaces — or,
+            // when only ids are named, DMs stay admitted by default (the
+            // same rule the listener applies) — and everything else is
+            // denied. With a servers dim the gateway must stay broad here:
+            // channel endpoints don't carry the guild id (known limit).
+            if restrict.contains_key("surfaces") && !restrict.contains_key("servers") {
+                let admitted: Vec<&str> = if classes.is_empty() {
+                    vec!["dm"]
+                } else {
+                    classes.iter().map(|s| s.as_str()).collect()
+                };
+                rules.push(json!({
+                    "scope": scope,
+                    "name": format!("connection:{name}:surface-classes"),
+                    "match": { "host": hosts, "port": 443, "method": methods,
+                               "pathPrefix": "/api/v10/channels",
+                               "channelClassIn": admitted },
+                    "verdict": "allow",
+                    "inject": inject,
+                }));
                 rules.push(json!({
                     "scope": scope,
                     "name": format!("connection:{name}:deny-unscoped-channels"),
@@ -1705,12 +1726,14 @@ mod tests {
         assert!(!c.allows_surface("dobby", None, "333", SurfaceClass::Public));
         // No edge for kdemo: nothing is admitted, not everything.
         assert!(!c.allows_surface("kdemo", None, "111", SurfaceClass::Public));
-        // allow 111, allow 222, deny unscoped channels, deny guilds, broad allow
-        assert_eq!(rules.len(), 5);
+        // allow 111, allow 222, the DM-default class allow, deny unscoped
+        // channels, deny guilds, broad allow
+        assert_eq!(rules.len(), 6);
         assert_eq!(rules[0]["match"]["pathPrefix"], "/api/v10/channels/111");
-        assert_eq!(rules[2]["verdict"], "deny");
-        assert_eq!(rules[4]["name"], "connection:discord");
-        assert!(rules[4]["match"]["pathPrefix"].is_null());
+        assert_eq!(rules[2]["match"]["channelClassIn"][0], "dm");
+        assert_eq!(rules[3]["verdict"], "deny");
+        assert_eq!(rules[5]["name"], "connection:discord");
+        assert!(rules[5]["match"]["pathPrefix"].is_null());
 
         // A server restriction admits the whole guild: no channels deny.
         let v = toml(
@@ -2057,17 +2080,19 @@ mod tests {
         assert!(c.allows_surface("w", None, "111", SurfaceClass::Dm)); // a listed DM id admits
                                                                        // Unknown never matches a class entry.
         assert!(!c.allows_surface("w", Some("999"), "x", SurfaceClass::Unknown));
-        // Classes can't compile to static path predicates: no per-id allow
-        // for "public", no broad /channels deny while a class is in scope.
+        // Classes compile to a channelClassIn allow (judged against the
+        // listener's classification) backed by the /channels deny.
         assert!(rules
             .iter()
             .any(|r| r["name"] == "connection:discord:channel:111"));
-        assert!(!rules
+        let class_rule = rules
             .iter()
-            .any(|r| r["name"].as_str().unwrap_or("").contains("public")));
+            .find(|r| r["name"] == "connection:discord:surface-classes")
+            .expect("class scope compiles a surface-classes rule");
+        assert_eq!(class_rule["match"]["channelClassIn"][0], "public");
         assert!(rules
             .iter()
-            .all(|r| r["name"] != "connection:discord:deny-unscoped-channels"));
+            .any(|r| r["name"] == "connection:discord:deny-unscoped-channels"));
 
         // An id-only scope keeps today's semantics: DMs pass by default.
         let (c, rules, _, _) = compile(
@@ -2085,6 +2110,12 @@ mod tests {
         assert!(rules
             .iter()
             .any(|r| r["name"] == "connection:discord:deny-unscoped-channels"));
+        // The gateway mirrors the DM default: ids-only still admits DM sends.
+        let class_rule = rules
+            .iter()
+            .find(|r| r["name"] == "connection:discord:surface-classes")
+            .expect("id-only scope still compiles the DM-default rule");
+        assert_eq!(class_rule["match"]["channelClassIn"][0], "dm");
 
         // A dm-only scope: the worker exists nowhere in guild-space.
         let (c, _, _, _) = compile(
