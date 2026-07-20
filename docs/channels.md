@@ -13,7 +13,7 @@ are two **uses** of one `slack` connection
 ## Setup
 
 ```bash
-roster connection add discord --worker yuko     # or: slack
+roster connection add discord --worker dobby     # or: slack
 ```
 
 Discord takes the bot token. Slack takes two: the bot token (`xoxb-…`) and
@@ -22,7 +22,7 @@ The wizard offers to write the binding into the worker's spec (that's what
 `--worker` answers); it lands as:
 
 ```toml
-# workers/yuko/worker.toml
+# workers/dobby/worker.toml
 [channels]
 discord = "discord"     # the vault secret its bot uses
 slack   = "slack"
@@ -36,6 +36,32 @@ boot-test without double-connecting a live bot).
 Both listeners **dial out** — Discord's gateway WebSocket, Slack's Socket
 Mode — so nothing ever listens on the internet. Both reconnect with backoff
 and never take the rest of the daemon down.
+
+**Nothing said while the server was down is lost.** Both listeners keep a
+per-channel replay cursor (the newest message id/ts handled); on every
+fresh connect they fetch what arrived after the cursor over REST and run
+each message down the exact same path as a live event — same wake rules,
+same history, stamped with the platform's own send time. Channels the
+listener has never seen get baselined on first connect, so only the very
+first message in a brand-new channel during downtime waits for the next
+message there. One Slack caveat: catch-up recovers top-level messages;
+replies posted into an existing thread while the server was down are not
+recovered.
+
+## Scoping the bot to a server or channel
+
+The worker's `[grant.<worker>]` edge on the Discord connection limits
+where it exists: list `servers` (guild ids) and/or `surfaces` (channel
+ids and/or the classes `public` / `private` / `dm`) — `roster connection
+grant discord dobby --restrict servers=…` or `--restrict
+surfaces=public,dm` writes it — and the listener treats everything
+outside the scope as if it didn't exist: not answered, not persisted, no
+commands registered there — while the gateway restricts API calls to the
+same scope where it can ([connections.md](connections.md) has the format
+and the enforcement details). Every entry admits a surface. DMs are
+admitted by default; a scope that names classes is exhaustive, so
+`surfaces = ["public"]` is how a worker opts out of DMs. The edit is
+live: scope changes apply without a listener restart.
 
 ## Who can do what
 
@@ -61,7 +87,7 @@ plus your channel designations. From most to least:
 Channels start **untrusted**; promotion is explicit:
 
 ```bash
-roster server channel trust 123456789
+roster channel trust 123456789
 ```
 
 Trust changes two things: participants may administer (approve gates, edit
@@ -84,7 +110,7 @@ wakes the worker; in `mention` mode only a DM or @mention does, while ambient
 messages are still recorded as history.
 
 ```bash
-roster server channel set 123456789 mode mention
+roster channel set 123456789 mode mention
 ```
 
 **Responding** is the worker's judgment. A DM, or a channel that's effectively
@@ -102,6 +128,14 @@ exits cleanly. Same lockdown, same identity token, same governed actions —
 a delivered message is content, exactly like a queued task's prompt.
 Budgets still apply per call; there's no wall-clock ceiling on a session,
 because the idle window bounds it instead.
+
+A fresh session doesn't start blind: its first turn carries the channel's
+most recent messages (default 25, `[context] history_max_messages` /
+`history_max_chars`), snapshotted at wake time and labeled as content — so
+the worker knows what was said before it woke, including ambient messages
+that never woke it in `mention` mode. The block rides the turn input, never
+the system prompt, so the prompt-cache prefix stays stable; the full record
+is always mounted read-only at `$HOME/channel` for deeper reading.
 
 `roster worker chat <name>` gives you the same warm session on your terminal
 (idle default 20s).
@@ -124,13 +158,44 @@ proposal always gates, with no trust promotion possible.
 The authenticated admin surface, delivered over the same outbound gateway
 connection and role-checked per command:
 
-- **Trusted+**: `/gates ls|approve|deny`, `/queue ls`, `/purpose show|set`,
-  `/memory show|forget|correct`
-- **Admin**: `/channel trust|untrust|mode|memory|memory-inferred|
-  memory-kinds|memory-retention`, `/identity show`
+- **Trusted+**: `/gates ls|approve|deny`, `/queue ls`, `/purpose show|set`
+- **Admin**: `/channel trust|untrust|mode`, `/identity show`
 
 Slack has no slash commands yet — administer via the CLI, or
 conversationally in trusted channels.
+
+## Linked channels: one conversation, several surfaces
+
+A **surface** is a platform-native place — a Discord DM, a Slack DM, your
+terminal. A **channel** is the conversation roster keeps for it: history,
+purpose, trust, settings, and the worker's per-conversation store. Every
+surface is its own channel until you link:
+
+```bash
+roster channel link manas term-manas-dobby 1451951375079
+roster channel unlink 1451951375079
+```
+
+Linking is the operator's act, from the authenticated CLI — it merges
+**conversation, never authority**. From then on the members are one
+channel: histories interleave (by the platform's own send times) into one
+record, purpose and trust designations are shared, and the worker's
+channel store is one space. A message arriving on any member surface joins
+the same conversation, and the reply goes to whichever surface the person
+spoke from this time — each turn names its reply surface, so the worker
+experiences one thread and just addresses each answer as directed.
+
+v1 links **1:1 surfaces only** — DM-class surfaces and terminal channels;
+group rooms are refused (merging audiences leaks by construction). Since
+every 1:1 surface is trusted by definition, a linked channel is trusted —
+uniform trust is a theorem here, not a rule.
+
+Two honest edges: warm sessions are shared across linked surfaces of one
+provider, while a surface on a *different* provider starts its own session
+— which still wakes with the merged history, so walking from Slack to your
+terminal carries the conversation even though the live box is fresh. And
+`unlink` never un-shares: the channel and its material stay with the
+remaining members; the departing surface starts over as a fresh singleton.
 
 ## The terminal
 
@@ -138,22 +203,22 @@ conversationally in trusted channels.
 model as the platforms above — not a side door. It opens the durable
 channel `term-<user>-<worker>`: trusted automatically (it's the operator's
 own shell, the definition of a sought-out 1:1), history recorded under
-`data/channels/`, a purpose the worker may propose, DM-grade memory recall
-(worker + channel + your user scope), and warm-session turns with the same
-lockdown and governance. The one difference is delivery: there is no send
-tool — the worker's reply text prints directly in your terminal. And like
-every conversation, the knowledge repository is read-only; durable research goes
-through `file_task`.
+`data/channels/`, a purpose the worker may propose, and warm-session turns
+with the same lockdown and governance. The one difference is delivery:
+there is no send tool — the worker's reply text prints directly in your
+terminal. And like every conversation, gated repos are read-only; durable
+repo work goes through `file_task`.
 
 ## History on disk
 
-The listener records everything under `data/channels/<id>/`: the full
-message history (`messages.jsonl`), downloaded attachments (`files/`), and
-the purpose file. A run in that channel gets recent messages in context and
+The listener records everything under `data/channels/<id>/` (the logical
+channel's id): the full message history (`messages.jsonl`), downloaded
+attachments (`files/`), and the purpose file. Surface bookkeeping — meta,
+replay cursors — stays under the surface's own id. A run in that channel gets recent messages in context and
 the channel directory mounted read-only for anything older — and only *its*
 channel; no run can read another channel's history.
 
 Per-channel memory behavior (whether the worker remembers, which kinds, how
-much it recalls here) is tuned with the `server channel set memory-*` keys —
+much it recalls here) is tuned with the `channel set memory-*` keys —
 see [memory.md](memory.md). Channel settings can only make org policy
 stricter, never looser.

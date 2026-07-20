@@ -12,7 +12,7 @@ is a task.)
 
 ## How work arrives
 
-- **You file it**: `roster worker task add yuko "…"`. Owner-standing work
+- **You file it**: `roster worker task add dobby "…"`. Owner-standing work
   always runs, budget or no budget.
 - **The heartbeat fires.** Every worker has a system recurring template —
   on by default, tuned with `heartbeat = "30m"` in its spec (`"off"`
@@ -81,34 +81,32 @@ recurring templates, 15 for relays; override per task with `--ceiling`.
 
 ## The worker's own view
 
-Every run mounts the partition read-write at `/opt/roster/tasks.json`
+Every run mounts the partition read-only at `$HOME/self/schedule.json`
 (`$ROSTER_TASKS_FILE`) — a live view the host rewrites on every change.
-The worker reads it freely; authoritative writes go through `set_tasks`
-with optimistic concurrency (send back the `version` you read; on conflict
-re-read and retry). Direct file edits are scratch. The heartbeat template
-is `system: true` and host-owned — the one entry the worker cannot touch.
+The worker reads it freely; writes go through `set_tasks` with optimistic
+concurrency (send back the `version` you read; on conflict re-read and
+retry). The heartbeat template is `system: true` and host-owned — the one
+entry the worker cannot touch.
 
 ## Code tasks
 
-```bash
-roster worker task add yuko --repo ~/projects/site "fix the RSS date bug"
-```
-
-The dispatcher provisions a writable git worktree of that repo at `--base`
-(default `main`) and mounts it into the box. The worker edits and then calls
-`propose_changes` — a gated action whose diff rides on the gate for review.
-On approval, the trusted side commits, pushes an `worker/<name>/…` branch, and
-opens the pull request. The box never holds the push credential.
+Code work rides the same connections as everything else — no special task
+kind. A repo on a gateway-reachable remote with a push grant: the worker
+clones into `workspace/`, edits, and pushes a branch through the gateway
+(keep `main` protected so review stays the merge gate). A repo on this
+host: grant it as a gated host-repo connection and changes land through
+the validated `repo_push` action ([repos.md](repos.md)) — the box never
+holds a push credential either way.
 
 ## Reorganization tasks
 
 ```bash
-roster worker task add yuko "reorganize the knowledge repo around topics"
+roster worker task add dobby "reorganize the knowledge repo around topics"
 ```
 
 Restructuring knowledge is an ordinary task now: every clean run gets its
 own branch of the knowledge repo and full agency over the layout; pushes
-land serialized, fast-forward only. See [knowledge.md](knowledge.md).
+land serialized, fast-forward only. See [repos.md](repos.md).
 
 ## Runs: the permanent record
 
@@ -117,12 +115,16 @@ record. Run ids are timestamps with a random suffix
 (`2026-07-10-21-51-17-a3b3`); any unique prefix works in commands.
 
 ```bash
-roster server runs ls --worker yuko
+roster server runs ls --worker dobby
 roster server runs show 2026-07-10       # transcript, journal, knowledge
                                           # commits, files, how it ended
 roster server runs context <run>         # the exact compiled prompts
 roster server runs recall <run>          # why each memory was included
 ```
+
+Each worker mounts its own complete run history read-only at
+`$HOME/self/runs/` — transcripts, compiled prompts, outcomes, raw — so
+"what did I do last week" is a question a worker can answer itself.
 
 A run record answers how the session ended (`done`, `ceiling`, `error`,
 `idle`), its knowledge access and what commit it pushed, what it

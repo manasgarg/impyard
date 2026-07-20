@@ -40,8 +40,26 @@ pub struct RunRecord {
     /// where `runs show` can find it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Pre-2026-07 single-repo records; read for old runs on disk, never
+    /// written. New records use `repos`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub knowledge: Option<KnowledgeRunRecord>,
+    /// One record per gated host-repo connection this run checked out,
+    /// keyed by connection name ("knowledge" for the legacy repo).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub repos: std::collections::BTreeMap<String, KnowledgeRunRecord>,
+}
+
+impl RunRecord {
+    /// The per-connection repo records, folding an old single-repo record in
+    /// as "knowledge" so pre-migration runs display and push-check the same.
+    pub fn repo_records(&self) -> std::collections::BTreeMap<String, KnowledgeRunRecord> {
+        let mut map = self.repos.clone();
+        if let Some(k) = &self.knowledge {
+            map.entry("knowledge".into()).or_insert_with(|| k.clone());
+        }
+        map
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +72,10 @@ pub struct RunSummary {
     pub ended_at: Option<String>,
     pub task_id: Option<String>,
     pub channel_id: Option<String>,
+    /// The platform-native surface the run's trigger arrived on, when the
+    /// context recorded one — provenance stays precise under linked
+    /// channels (records from before the split have none).
+    pub surface_id: Option<String>,
     pub user_id: Option<String>,
     pub run_dir: PathBuf,
     pub record: Option<RunRecord>,
@@ -64,6 +86,10 @@ fn record_path(run_id: &str) -> PathBuf {
 }
 
 pub fn start(run_id: &str, worker: &str, kind: &str, task_id: Option<&str>) -> Result<(), String> {
+    // The one place a run dir is born: under the worker's own runs dir, so
+    // the whole history mounts per worker. Created BEFORE save so the
+    // run_dir resolver finds it from here on.
+    std::fs::create_dir_all(paths::new_run_dir(worker, run_id)).map_err(|e| e.to_string())?;
     let record = RunRecord {
         id: run_id.to_string(),
         worker: worker.to_string(),
@@ -76,6 +102,7 @@ pub fn start(run_id: &str, worker: &str, kind: &str, task_id: Option<&str>) -> R
         exit_code: None,
         error: None,
         knowledge: None,
+        repos: Default::default(),
     };
     save(&record)
 }
@@ -127,23 +154,27 @@ pub fn outcome_report(run_id: &str) -> Option<(String, Option<String>)> {
     ))
 }
 
-pub fn attach_storage(run_id: &str, knowledge: Option<KnowledgeRunRecord>) -> Result<(), String> {
+pub fn attach_storage(
+    run_id: &str,
+    repos: std::collections::BTreeMap<String, KnowledgeRunRecord>,
+) -> Result<(), String> {
     let mut record = load(run_id).ok_or_else(|| format!("no run record for {run_id}"))?;
-    record.knowledge = knowledge;
+    record.repos = repos;
     save(&record)
 }
 
 pub fn update_knowledge(
     run_id: &str,
+    connection: &str,
     state: &str,
     produced_commit: Option<&str>,
     error: Option<&str>,
 ) -> Result<(), String> {
     let mut record = load(run_id).ok_or_else(|| format!("no run record for {run_id}"))?;
-    if let Some(knowledge) = record.knowledge.as_mut() {
-        knowledge.state = state.into();
-        knowledge.produced_commit = produced_commit.map(String::from);
-        knowledge.error = error.map(String::from);
+    if let Some(repo) = record.repos.get_mut(connection) {
+        repo.state = state.into();
+        repo.produced_commit = produced_commit.map(String::from);
+        repo.error = error.map(String::from);
     }
     save(&record)
 }
@@ -175,21 +206,40 @@ pub fn list() -> Vec<RunSummary> {
         .collect();
     let journal_workers = crate::worker::journal::run_workers();
     let base = paths::runs_dir();
-    let mut runs: Vec<RunSummary> = std::fs::read_dir(base)
+    // Two layouts coexist: runs/<worker>/<run-id> (current) and runs/<run-id>
+    // (pre-migration history). A top-level entry that is itself a run dir is
+    // legacy; any other directory is a worker's runs dir.
+    let is_run_dir = |path: &Path| {
+        path.is_dir()
+            && (path.join("run.json").exists()
+                || path.join("stdout.jsonl").exists()
+                // one-home layout, and the pre-2026-07 mount triple
+                || path.join("home/session").is_dir()
+                || path.join("session").is_dir()
+                || path.join("workspace").is_dir())
+    };
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(base).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if is_run_dir(&path) {
+            candidates.push(path);
+        } else if path.is_dir() {
+            for child in std::fs::read_dir(&path).into_iter().flatten().flatten() {
+                let child = child.path();
+                if is_run_dir(&child) {
+                    candidates.push(child);
+                }
+            }
+        }
+    }
+    let mut runs: Vec<RunSummary> = candidates
         .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|entry| {
-            let path = entry.path();
-            path.is_dir()
-                && (path.join("run.json").exists()
-                    || path.join("stdout.jsonl").exists()
-                    || path.join("session").is_dir()
-                    || path.join("workspace").is_dir())
-        })
-        .filter_map(|entry| {
-            let id = entry.file_name().to_string_lossy().to_string();
-            summarize(&entry.path(), by_run.get(&id), journal_workers.get(&id))
+        .filter_map(|path| {
+            let id = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            summarize(&path, by_run.get(&id), journal_workers.get(&id))
         })
         .collect();
     runs.sort_by(
@@ -212,10 +262,16 @@ fn summarize(
 ) -> Option<RunSummary> {
     let id = path.file_name()?.to_string_lossy().to_string();
     let record = load(&id);
-    let context = read_json(path.join("memory-context.json"));
+    let context = read_json(path.join("run-context.json"))
+        .or_else(|| read_json(path.join("memory-context.json")));
     let channel_id = context
         .as_ref()
         .and_then(|v| v.get("channel_id"))
+        .and_then(Value::as_str)
+        .map(String::from);
+    let surface_id = context
+        .as_ref()
+        .and_then(|v| v.get("surface_id"))
         .and_then(Value::as_str)
         .map(String::from);
     let user_id = context
@@ -238,9 +294,7 @@ fn summarize(
         .or_else(|| journal_worker.cloned())
         .unwrap_or_else(|| "?".into());
     let kind = record.as_ref().map(|r| r.kind.clone()).unwrap_or_else(|| {
-        if task.and_then(|t| t.repo.as_ref()).is_some() || path.join("worktree").exists() {
-            "code".into()
-        } else if task.is_some() {
+        if task.is_some() {
             "task".into()
         } else if channel_id.is_some() {
             "session".into()
@@ -279,6 +333,7 @@ fn summarize(
         ended_at,
         task_id,
         channel_id,
+        surface_id,
         user_id,
         run_dir: path.to_path_buf(),
         record,
@@ -292,7 +347,15 @@ fn read_json(path: PathBuf) -> Option<Value> {
 }
 
 fn session_files(path: &Path) -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(path.join("session"))
+    // The one-home layout keeps the transcript at home/session; runs recorded
+    // before the change (still on disk, state/ is prunable not pruned) have it
+    // at session/.
+    let session = if path.join("home/session").is_dir() {
+        path.join("home/session")
+    } else {
+        path.join("session")
+    };
+    let mut files: Vec<PathBuf> = std::fs::read_dir(session)
         .into_iter()
         .flatten()
         .flatten()
@@ -459,6 +522,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn per_worker_run_dirs_create_resolve_and_list_beside_legacy() {
+        let _guard = crate::statefile::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("ROSTER_ROOT", dir.path());
+
+        // New runs are born under runs/<worker>/ and resolve by id alone.
+        start("2026-07-19-10-00-00-aaaa", "dobby", "task", None).unwrap();
+        assert_eq!(
+            paths::run_dir("2026-07-19-10-00-00-aaaa"),
+            paths::worker_runs_dir("dobby").join("2026-07-19-10-00-00-aaaa")
+        );
+        assert_eq!(load("2026-07-19-10-00-00-aaaa").unwrap().worker, "dobby");
+
+        // A pre-migration global run dir still resolves and lists.
+        let legacy = paths::runs_dir().join("2026-07-01-00-00-00-bbbb");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(
+            legacy.join("run.json"),
+            serde_json::json!({
+                "id": "2026-07-01-00-00-00-bbbb", "worker": "kdemo", "kind": "task",
+                "state": "done", "started_at": "2026-07-01T00:00:00Z"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(paths::run_dir("2026-07-01-00-00-00-bbbb"), legacy);
+
+        let ids: Vec<String> = list().into_iter().map(|r| r.id).collect();
+        assert!(
+            ids.contains(&"2026-07-19-10-00-00-aaaa".to_string()),
+            "{ids:?}"
+        );
+        assert!(
+            ids.contains(&"2026-07-01-00-00-00-bbbb".to_string()),
+            "{ids:?}"
+        );
+    }
+
+    #[test]
     fn parses_modern_run_id_timestamp() {
         assert_eq!(
             timestamp_from_id("2026-07-10-21-51-17-a3b3").as_deref(),
@@ -488,7 +592,7 @@ mod tests {
     fn legacy_run_records_with_removed_artifact_fields_still_parse() {
         let record: RunRecord = serde_json::from_value(serde_json::json!({
             "id": "run-1",
-            "worker": "yuko",
+            "worker": "dobby",
             "kind": "task",
             "state": "done",
             "started_at": "2026-01-01T00:00:00Z",

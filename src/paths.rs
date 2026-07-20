@@ -45,8 +45,8 @@ pub fn state_root() -> PathBuf {
     base("XDG_STATE_HOME", ".local/state", "state")
 }
 
-/// A worker handle may arrive as a bare name ("yuko") or a subject
-/// ("org/yuko"); directories are keyed by the bare name.
+/// A worker handle may arrive as a bare name ("dobby") or a subject
+/// ("org/dobby"); directories are keyed by the bare name.
 pub fn short_worker(worker: &str) -> &str {
     worker.rsplit('/').next().unwrap_or(worker)
 }
@@ -144,10 +144,28 @@ pub fn worker_memory_file(worker: &str) -> PathBuf {
     worker_data_dir(worker).join("memory.jsonl")
 }
 
-/// Pre-`memory.jsonl` interaction-memory log; read-only fallback until
-/// `worker memory compact` finishes the physical migration.
-pub fn worker_notes_legacy_file(worker: &str) -> PathBuf {
-    worker_data_dir(worker).join("notes-legacy.jsonl")
+/// The worker's durable store — the auto-provisioned rw host-dir connection
+/// every worker gets, mounted at `$HOME/store` in every run.
+pub fn worker_store_dir(worker: &str) -> PathBuf {
+    worker_data_dir(worker).join("store")
+}
+
+/// Rotating rsync snapshots of the store (backups protect against bad runs,
+/// not disk loss — see docs/plans/worker-environment.md).
+pub fn worker_store_snapshots_dir(worker: &str) -> PathBuf {
+    worker_data_dir(worker).join("store-snapshots")
+}
+
+/// The worker's per-channel durable spaces, keyed (worker × logical
+/// channel): conversation-scoped material, mounted rw at
+/// `$HOME/channel/store` in runs serving that channel. Worker-keyed on
+/// disk — two workers serving one channel never share a filesystem.
+pub fn worker_channel_stores_dir(worker: &str) -> PathBuf {
+    worker_data_dir(worker).join("channel-stores")
+}
+
+pub fn worker_channel_store_dir(worker: &str, channel_id: &str) -> PathBuf {
+    worker_channel_stores_dir(worker).join(channel_id)
 }
 
 pub fn worker_knowledge_dir(worker: &str) -> PathBuf {
@@ -207,8 +225,33 @@ pub fn runs_dir() -> PathBuf {
     state_root().join("runs")
 }
 
+/// One worker's complete run history — the box mounts this read-only at
+/// `$HOME/self/runs` (a worker is scoped to channels that can be trusted,
+/// so its own raw record — transcripts included — is its to read).
+pub fn worker_runs_dir(worker: &str) -> PathBuf {
+    runs_dir().join(short_worker(worker))
+}
+
+/// Where a NEW run's dir is created. `runlog::start` is the only creator;
+/// everything else resolves through `run_dir`.
+pub fn new_run_dir(worker: &str, run_id: &str) -> PathBuf {
+    worker_runs_dir(worker).join(run_id)
+}
+
+/// Resolve an existing run's dir: the per-worker layout
+/// (`runs/<worker>/<run-id>`), falling back to the pre-2026-07 global
+/// layout (`runs/<run-id>`) for history `roster migrate` hasn't moved.
 pub fn run_dir(run_id: &str) -> PathBuf {
-    runs_dir().join(run_id)
+    let root = runs_dir();
+    if let Ok(entries) = std::fs::read_dir(&root) {
+        for e in entries.flatten() {
+            let cand = e.path().join(run_id);
+            if cand.is_dir() {
+                return cand;
+            }
+        }
+    }
+    root.join(run_id)
 }
 
 /// Ephemeral per-run box identity tokens (proxy credentials → subject).
@@ -266,7 +309,7 @@ mod tests {
     /// Worker paths accept both bare names and subjects.
     #[test]
     fn worker_handles_normalize() {
-        assert_eq!(worker_data_dir("yuko"), worker_data_dir("org/yuko"));
-        assert_eq!(worker_queue_dir("org/yuko").file_name().unwrap(), "queue");
+        assert_eq!(worker_data_dir("dobby"), worker_data_dir("org/dobby"));
+        assert_eq!(worker_queue_dir("org/dobby").file_name().unwrap(), "queue");
     }
 }

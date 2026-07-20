@@ -420,6 +420,7 @@ fn random_bytes(n: usize) -> Vec<u8> {
 }
 
 fn prompt(question: &str) -> Result<String, BErr> {
+    crate::util::sane_line_discipline();
     print!("{question}");
     std::io::stdout().flush()?;
     let mut line = String::new();
@@ -438,6 +439,7 @@ fn prompt_default(question: &str, default: &str) -> Result<String, BErr> {
 /// is unavailable, it falls back to a normal read). Echo is always restored,
 /// even if the read fails.
 fn prompt_hidden(question: &str) -> Result<String, BErr> {
+    crate::util::sane_line_discipline();
     print!("{question}");
     std::io::stdout().flush()?;
     let echo_off = set_echo(false);

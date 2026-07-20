@@ -6,7 +6,6 @@ use crate::util::BErr;
 use crate::work::tms;
 use crate::worker::context as context_compiler;
 use crate::worker::journal;
-use crate::worker::memory;
 
 pub fn ls(worker: Option<&str>, limit: usize, json: bool) -> Result<(), BErr> {
     if limit == 0 {
@@ -26,6 +25,7 @@ pub fn ls(worker: Option<&str>, limit: usize, json: bool) -> Result<(), BErr> {
                     "state": run.state, "started_at": run.started_at,
                     "ended_at": run.ended_at, "task_id": run.task_id,
                     "channel_id": run.channel_id,
+                    "surface_id": run.surface_id,
                     "error": run.record.as_ref().and_then(|r| r.error.clone()),
                 })
             })
@@ -80,6 +80,11 @@ pub fn show(id: &str) -> Result<(), BErr> {
     if let Some(channel) = &run.channel_id {
         println!("channel   {channel}");
     }
+    if let Some(surface) = &run.surface_id {
+        if Some(surface) != run.channel_id.as_ref() {
+            println!("surface   {surface}");
+        }
+    }
     if let Some(user) = &run.user_id {
         println!("user      {user}");
     }
@@ -93,14 +98,14 @@ pub fn show(id: &str) -> Result<(), BErr> {
         if let Some(error) = &record.error {
             println!("error     {}", runlog::one_line(error, 300));
         }
-        if let Some(knowledge) = &record.knowledge {
-            println!("knowledge {}", knowledge.state);
-            println!("  mode    {}", knowledge.mode);
-            println!("  base    {}", knowledge.base_commit);
-            if let Some(commit) = &knowledge.produced_commit {
+        for (connection, repo) in record.repo_records() {
+            println!("repo      {connection}: {}", repo.state);
+            println!("  mode    {}", repo.mode);
+            println!("  base    {}", repo.base_commit);
+            if let Some(commit) = &repo.produced_commit {
                 println!("  commit  {commit}");
             }
-            if let Some(error) = &knowledge.error {
+            if let Some(error) = &repo.error {
                 println!("  error   {}", runlog::one_line(error, 200));
             }
         }
@@ -157,32 +162,6 @@ pub fn show(id: &str) -> Result<(), BErr> {
                         .to_string(),
                     200
                 )
-            );
-        }
-    }
-
-    let recalls = memory::recall_trace(&run.id);
-    if !recalls.is_empty() {
-        println!(
-            "\nmemory recall ({} turn{}):",
-            recalls.len(),
-            if recalls.len() == 1 { "" } else { "s" }
-        );
-        for recall in recalls {
-            let selected = recall
-                .get("selected")
-                .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|v| v.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                })
-                .unwrap_or_default();
-            println!(
-                "  {}  selected: {}",
-                recall.get("ts").and_then(|v| v.as_str()).unwrap_or(""),
-                if selected.is_empty() { "-" } else { &selected }
             );
         }
     }
@@ -302,20 +281,6 @@ pub fn context(id: &str, all: bool) -> Result<(), BErr> {
         if !input.is_empty() {
             println!("\n--- input ---\n{input}");
         }
-    }
-    Ok(())
-}
-
-/// The memory recall trace for one session (was: `roster memory explain`).
-pub fn recall(id: &str) -> Result<(), BErr> {
-    let run = runlog::resolve(id).map_err(|e| -> BErr { e.into() })?;
-    let trace = memory::recall_trace(&run.id);
-    if trace.is_empty() {
-        println!("no memory recall trace for run {}", run.id);
-        return Ok(());
-    }
-    for event in trace {
-        println!("{}", serde_json::to_string_pretty(&event)?);
     }
     Ok(())
 }

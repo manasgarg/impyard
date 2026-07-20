@@ -5,13 +5,14 @@ every admin operation are subcommands of one executable. The grammar mirrors
 the product thesis — *rented intelligence, owned governance*:
 
 - **`roster server …`** — the owned machinery: the daemon, config validation,
-  the approval desk, channel edges, and the run log (every session, whoever
-  ran it).
+  the approval desk, and the run log (every session, whoever ran it).
 - **`roster connection …`** — the org's relationships with external
   services: one noun for capabilities, channels, and model providers.
 - **`roster worker …`** — the governed identities: lifecycle, trust, memory,
   knowledge, each worker's durable task queue — and running sessions as one,
   directly or interactively.
+- **`roster channel …`** — the conversations the workers serve: trust
+  designation, response mode, per-channel memory policy.
 
 Conventions, everywhere:
 
@@ -32,17 +33,21 @@ server start      [--cap N] [--once] [--no-listen] [--addr HOST:PORT]
 server status     [--json]
 server validate   parse + check all config, print every error
 server approvals  ls [--json] | show <id> | approve <id> [note] | deny <id> [note]
-server channel    ls [--json] | show <id> | trust <id> | untrust <id>
+server runs       ls [--worker W] [--limit N] [--json]
+                  | show <run> | context <run> [--all] | recall <run>
+
+channel           ls [--json] | show <id> | trust <id> | untrust <id>
+                  | link <name> <surface>.. | unlink <surface>
                   | set <id> <key> <value>
                     keys: mode, memory, memory-inferred, memory-kinds,
                           memory-retention, memory-notes, memory-chars
-server runs       ls [--worker W] [--limit N] [--json]
-                  | show <run> | context <run> [--all] | recall <run>
 
 connection catalog
 connection add    [<service>] [--worker W].. [--org] [--name NAME]
                   [--host H].. [--header TEMPLATE] [--env VAR] [--method M]..
                   [--use U].. [--auth A] [--declare] [--verify]
+connection grant  <name> <worker>|--org [--restrict DIM=IDS]..
+connection revoke <name> <worker>|--org
 connection ls     [--json]
 connection rm     <name>
 
@@ -67,7 +72,7 @@ completions       <shell>   shell completions to stdout (bash, zsh, fish, …)
 
 A bare noun shows its most useful read-only view: `roster server` is
 `server status`; `roster worker`, `roster connection`, `server approvals`,
-`server channel`, `server runs`, and `worker task` are their `ls`.
+`roster channel`, `server runs`, and `worker task` are their `ls`.
 
 ## `roster init`
 
@@ -78,8 +83,8 @@ overwrites what exists.
 ## `roster talk`
 
 Your terminal as a chat channel — the Discord/Slack interaction model
-without leaving the shell. `roster talk yuko` opens (or resumes) the durable
-channel `term-<you>-yuko`: trusted like a DM, history recorded under
+without leaving the shell. `roster talk dobby` opens (or resumes) the durable
+channel `term-<you>-dobby`: trusted like a DM, history recorded under
 `data/channels/`, a purpose the worker can propose, channel and user memory
 scopes, and warm-session turns. Replies print straight to your terminal;
 Ctrl-D ends the session immediately. `--idle SECS` (default 300) ends it
@@ -120,7 +125,8 @@ prints the exact action that would execute (identity and code gates render a
 diff); `approve` executes it idempotently; `deny` records the refusal. Both
 accept an optional note. See [actions-and-trust.md](actions-and-trust.md).
 
-**`server channel`** manages chat-channel designations: `trust`/`untrust`
+**`channel`** manages the conversations workers serve (`server channel`
+still works, as an alias): `trust`/`untrust`
 set whether a channel's participants may administer the worker and whether
 replies send without a gate; `set` tunes response mode and the channel's
 memory policy. See [channels.md](channels.md) and [memory.md](memory.md).
@@ -198,5 +204,5 @@ log. See [memory.md](memory.md).
 repository; from there, use ordinary git:
 
 ```bash
-git -C "$(roster worker knowledge yuko)" log --oneline
+git -C "$(roster worker knowledge dobby)" log --oneline
 ```

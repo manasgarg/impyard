@@ -2,9 +2,10 @@
 //! boundary is the trust boundary; TS lives only in the box). The command
 //! grammar is the product thesis — rented intelligence, owned governance:
 //!
-//!   roster server …       the owned machinery: daemon, config, desk, channels, run log
+//!   roster server …       the owned machinery: daemon, config, desk, run log
 //!   roster connection …   the org's relationships with external services
-//!   roster worker …       the governed identities: lifecycle, trust, memory, work, sessions
+//!   roster worker …       the governed identities: lifecycle, trust, work, sessions
+//!   roster channel …      the conversations the workers serve: trust, settings
 
 mod action;
 mod channel;
@@ -39,7 +40,9 @@ struct Cli {
 enum Cmd {
     /// Initialize the deployment: config, data, and state roots (XDG)
     Init,
-    /// The owned machinery: daemon, config, approval desk, channels, run log (bare: status)
+    /// One-time upgrade to the store/connections worker environment
+    Migrate,
+    /// The owned machinery: daemon, config, approval desk, run log (bare: status)
     #[command(
         after_help = "glossary: a box is the sandboxed container one session runs in; a gate is a \
                       proposed action awaiting your approval; a grant is an egress rule in org.toml; \
@@ -58,16 +61,28 @@ enum Cmd {
     },
     #[command(subcommand, hide = true)]
     Credential(CredentialCmd),
-    /// The governed identities: lifecycle, trust, memory, knowledge, work (bare: ls)
+    /// The governed identities: lifecycle, trust, work (bare: ls)
     #[command(
         after_help = "glossary: standing marks whose work a task is (owner: always runs; proactive: \
                       paced by budgets); a box is the sandboxed container one session runs in; a \
-                      gate is a proposed action awaiting your approval; knowledge is the worker's \
-                      git-backed notes repo; memory is what it recalls about people and channels"
+                      gate is a proposed action awaiting your approval; the store is the worker's \
+                      durable directory; a gated repo lands changes through a validated push"
     )]
     Worker {
         #[command(subcommand)]
         cmd: Option<WorkerCmd>,
+    },
+    /// Conversations the workers serve: trust designation, response mode (bare: ls)
+    #[command(
+        after_help = "glossary: a surface is a platform-native place the worker exists — a Discord \
+                      channel, a Slack DM, your terminal; a channel is the conversation roster \
+                      keeps for it: history, purpose, trust, settings. Trusting a channel lets its \
+                      participants administer (approve gates, edit purpose) and sends replies \
+                      without gating"
+    )]
+    Channel {
+        #[command(subcommand)]
+        cmd: Option<ChannelCmd>,
     },
     /// Talk with a worker right here in the terminal — a trusted chat channel
     Talk {
@@ -119,7 +134,8 @@ enum ServerCmd {
         #[command(subcommand)]
         cmd: Option<ApprovalsCmd>,
     },
-    /// Channel edges: trust designation, response mode, memory settings (bare: ls)
+    /// The pre-promotion spelling of `roster channel` — same commands
+    #[command(hide = true)]
     Channel {
         #[command(subcommand)]
         cmd: Option<ChannelCmd>,
@@ -170,27 +186,42 @@ enum ChannelCmd {
     },
     /// One channel's settings, readable
     Show {
-        /// Channel id (see: roster server channel ls)
+        /// Channel id (see: roster channel ls)
         channel_id: String,
     },
     /// Trust a channel: its participants may administer; replies need no gate
     Trust {
-        /// Channel id (see: roster server channel ls)
+        /// Channel id (see: roster channel ls)
         channel_id: String,
     },
     /// Untrust a channel: participants are content-only
     Untrust {
-        /// Channel id (see: roster server channel ls)
+        /// Channel id (see: roster channel ls)
         channel_id: String,
     },
     /// Tune a setting (just the id: list keys, allowed values, current values)
     Set {
-        /// Channel id (see: roster server channel ls)
+        /// Channel id (see: roster channel ls)
         channel_id: String,
         /// A settings key (omit to list them all)
         key: Option<String>,
         /// The new value (omit to list keys and values)
         value: Option<String>,
+    },
+    /// Link surfaces into one conversation: shared history, purpose, trust,
+    /// store. v1 links 1:1 surfaces only (DMs, your terminal)
+    Link {
+        /// A name for the linked channel (or an existing linked channel to extend)
+        name: String,
+        /// Surface ids to link (see: roster channel ls)
+        #[arg(required = true)]
+        surfaces: Vec<String>,
+    },
+    /// Remove a surface from its linked channel — the channel and its
+    /// material stay with the remaining members; nothing is un-shared
+    Unlink {
+        /// The surface id to unlink
+        surface_id: String,
     },
 }
 
@@ -203,7 +234,7 @@ enum ConnectionCmd {
         /// Service from the connection catalog (omit for the guided session)
         #[arg(value_name = "SERVICE")]
         service: Option<String>,
-        /// Grant to this worker (repeatable); default is to ask
+        /// Also grant to this worker (repeatable); omit to connect without granting
         #[arg(long)]
         worker: Vec<String>,
         /// Org-wide: every current and future worker (the explicit escalation)
@@ -237,13 +268,40 @@ enum ConnectionCmd {
         #[arg(long)]
         verify: bool,
     },
+    /// Make a connection available to a worker (the restriction rides on the edge)
+    Grant {
+        /// Connection name (see: roster connection ls)
+        name: String,
+        /// Worker to grant to (or --org for the fleet-wide edge)
+        #[arg(value_name = "WORKER")]
+        worker: Option<String>,
+        /// Fleet-wide edge: every current and future worker
+        #[arg(long)]
+        org: bool,
+        /// Scope this edge to provider dimensions, e.g. servers=111,222 or
+        /// surfaces=public,dm — ids and classes mix; naming classes is
+        /// exhaustive, so surfaces=public means no DMs (repeatable)
+        #[arg(long, value_name = "DIM=IDS")]
+        restrict: Vec<String>,
+    },
+    /// Withdraw a worker's edge on a connection (the connection stays)
+    Revoke {
+        /// Connection name (see: roster connection ls)
+        name: String,
+        /// Worker whose edge to withdraw (or --org for the fleet-wide edge)
+        #[arg(value_name = "WORKER")]
+        worker: Option<String>,
+        /// The fleet-wide edge
+        #[arg(long)]
+        org: bool,
+    },
     /// Every connection, its use(s) — capability, channel, model — and state
     Ls {
         /// Machine-readable JSON
         #[arg(long)]
         json: bool,
     },
-    /// Delete the secret from the vault; report every surviving reference
+    /// Delete the secret and, on confirm, the connection file with its edges
     Rm {
         /// Connection name (see: roster connection ls)
         name: String,
@@ -276,7 +334,7 @@ enum WorkerCmd {
         #[arg(long)]
         json: bool,
     },
-    /// One worker: spec, budgets and spend, queue, gates, memory, knowledge
+    /// One worker: spec, budgets and spend, queue, gates, store
     Show {
         /// The worker's name
         name: String,
@@ -303,7 +361,7 @@ enum WorkerCmd {
         #[arg(required = true, value_name = "PROMPT")]
         prompt: Vec<String>,
     },
-    /// Retire a worker: archive its spec, memory, knowledge, and history (never deletes)
+    /// Retire a worker: archive its spec, store, and history (never deletes)
     Rm {
         /// The worker to retire
         name: String,
@@ -324,13 +382,24 @@ enum WorkerCmd {
         #[command(subcommand)]
         cmd: Option<TaskCmd>,
     },
-    /// Inspect and repair interaction memory
-    #[command(subcommand)]
-    Memory(MemoryCmd),
     /// Print the knowledge repo path (then use git)
     Knowledge {
         /// The worker's name
         name: String,
+    },
+    /// Restore the worker's store from a snapshot (default: the newest)
+    Restore {
+        /// The worker's name
+        name: String,
+        /// Snapshot name (see --list); omit for the newest
+        #[arg(long)]
+        from: Option<String>,
+        /// Restore only this conversation's channel store
+        #[arg(long)]
+        channel: Option<String>,
+        /// List available snapshots and exit
+        #[arg(long)]
+        list: bool,
     },
 }
 
@@ -346,12 +415,6 @@ enum TaskCmd {
         /// File as proactive: waits out spent budget windows (owner-filed work always runs)
         #[arg(long)]
         proactive: bool,
-        /// Code task in a worktree of this git repo
-        #[arg(long)]
-        repo: Option<String>,
-        /// Base ref for --repo
-        #[arg(long, default_value = "main")]
-        base: String,
         /// The prompt (bare words are joined)
         #[arg(required = true, value_name = "PROMPT")]
         prompt: Vec<String>,
@@ -386,78 +449,6 @@ enum TaskCmd {
 }
 
 #[derive(Subcommand)]
-enum MemoryCmd {
-    /// List memory notes
-    Ls {
-        /// The worker whose memory to list
-        worker: String,
-        /// Filter: worker | channel | user
-        #[arg(long)]
-        scope: Option<String>,
-        /// Filter: the scope's id (a channel id, a user id)
-        #[arg(long)]
-        scope_id: Option<String>,
-    },
-    /// Print one note in full
-    Show {
-        /// The worker whose note it is
-        worker: String,
-        /// Note id (see: roster worker memory ls <worker>)
-        id: String,
-    },
-    /// Replace a note's content (recorded, not a silent edit)
-    Correct {
-        /// The worker whose note it is
-        worker: String,
-        /// Note id (see: roster worker memory ls <worker>)
-        id: String,
-        /// The replacement content (bare words are joined)
-        #[arg(required = true, value_name = "REPLACEMENT")]
-        replacement: Vec<String>,
-    },
-    /// Remove a note
-    Rm {
-        /// The worker whose note it is
-        worker: String,
-        /// Note id (see: roster worker memory ls <worker>)
-        id: String,
-    },
-    /// Include a note in every recall, until unpinned
-    Pin {
-        /// The worker whose note it is
-        worker: String,
-        /// Note id (see: roster worker memory ls <worker>)
-        id: String,
-    },
-    /// Stop force-including a pinned note
-    Unpin {
-        /// The worker whose note it is
-        worker: String,
-        /// Note id (see: roster worker memory ls <worker>)
-        id: String,
-    },
-    /// Keep a note but stop recalling it
-    Disable {
-        /// The worker whose note it is
-        worker: String,
-        /// Note id (see: roster worker memory ls <worker>)
-        id: String,
-    },
-    /// Recall a disabled note again
-    Enable {
-        /// The worker whose note it is
-        worker: String,
-        /// Note id (see: roster worker memory ls <worker>)
-        id: String,
-    },
-    /// Drop dead notes, keep live ones
-    Compact {
-        /// The worker whose memory to compact
-        worker: String,
-    },
-}
-
-#[derive(Subcommand)]
 enum RunsCmd {
     /// List past sessions, whoever they were attributed to
     Ls {
@@ -484,20 +475,33 @@ enum RunsCmd {
         #[arg(long)]
         all: bool,
     },
-    /// The memory recall trace
-    Recall {
-        /// Run id (any unique prefix)
-        run: String,
-    },
 }
 
 #[tokio::main]
 async fn main() {
     // Die quietly on a closed pipe (`roster … | head`) instead of panicking:
     // Rust ignores SIGPIPE by default, turning EPIPE into a println panic.
+    //
+    // NEVER for the daemon. `server start` writes into box stdin pipes and
+    // reads box stdout; a box dying mid-turn makes EPIPE routine, and with
+    // SIG_DFL the whole daemon dies of SIGPIPE — which systemd counts as a
+    // CLEAN exit, so even Restart=on-failure won't bring it back. The
+    // daemon keeps Rust's default (EPIPE as an io::Error the session loop
+    // already handles); the CLI keeps the quiet-pipe behavior.
     #[cfg(unix)]
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    {
+        let is_daemon = matches!(
+            (
+                std::env::args().nth(1).as_deref(),
+                std::env::args().nth(2).as_deref()
+            ),
+            (Some("server"), Some("start" | "run"))
+        );
+        if !is_daemon {
+            unsafe {
+                libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+            }
+        }
     }
 
     // Old top-level commands point at their new home instead of half-working:
@@ -523,6 +527,7 @@ async fn main() {
     }
     let result: Result<(), Box<dyn std::error::Error>> = match cli.command {
         Cmd::Init => cli::init::run(),
+        Cmd::Migrate => cli::worker::migrate(),
         Cmd::Server { cmd } => match cmd {
             None => cli::server::status(false).await,
             Some(ServerCmd::Start {
@@ -542,25 +547,7 @@ async fn main() {
                 }
                 Some(ApprovalsCmd::Deny { id, note }) => cli::approvals::deny(&id, note.as_deref()),
             },
-            Some(ServerCmd::Channel { cmd }) => match cmd {
-                None => cli::channel::ls(false),
-                Some(ChannelCmd::Ls { json }) => cli::channel::ls(json),
-                Some(ChannelCmd::Show { channel_id }) => cli::channel::show(&channel_id),
-                Some(ChannelCmd::Trust { channel_id }) => {
-                    cli::channel::set_trust(&channel_id, true)
-                }
-                Some(ChannelCmd::Untrust { channel_id }) => {
-                    cli::channel::set_trust(&channel_id, false)
-                }
-                Some(ChannelCmd::Set {
-                    channel_id,
-                    key,
-                    value,
-                }) => match (key, value) {
-                    (Some(key), Some(value)) => cli::channel::set(&channel_id, &key, &value),
-                    _ => cli::channel::set_help(&channel_id),
-                },
-            },
+            Some(ServerCmd::Channel { cmd }) => run_channel_cmd(cmd),
             Some(ServerCmd::Runs { cmd }) => match cmd {
                 None => cli::runs::ls(None, 20, false),
                 Some(RunsCmd::Ls {
@@ -570,7 +557,6 @@ async fn main() {
                 }) => cli::runs::ls(worker.as_deref(), limit, json),
                 Some(RunsCmd::Show { run }) => cli::runs::show(&run),
                 Some(RunsCmd::Context { run, all }) => cli::runs::context(&run, all),
-                Some(RunsCmd::Recall { run }) => cli::runs::recall(&run),
             },
         },
         Cmd::Connection { cmd } => match cmd {
@@ -623,6 +609,15 @@ async fn main() {
                 }
                 None => cli::connections::guided().await,
             },
+            Some(ConnectionCmd::Grant {
+                name,
+                worker,
+                org,
+                restrict,
+            }) => cli::connections::grant(&name, worker, org, &restrict),
+            Some(ConnectionCmd::Revoke { name, worker, org }) => {
+                cli::connections::revoke(&name, worker, org)
+            }
             Some(ConnectionCmd::Ls { json }) => cli::connections::ls(json),
             Some(ConnectionCmd::Rm { name }) => cli::connections::rm(&name),
         },
@@ -635,6 +630,7 @@ async fn main() {
                 Err("`roster credential ls` has retired — run: roster connection ls".into())
             }
         },
+        Cmd::Channel { cmd } => run_channel_cmd(cmd),
         Cmd::Talk { name, idle } => match name {
             Some(name) => run::session::talk(&name, idle).await,
             None => talk_bare(idle).await,
@@ -663,10 +659,8 @@ async fn main() {
                     worker,
                     ceiling,
                     proactive,
-                    repo,
-                    base,
                     prompt,
-                }) => cli::task::add(&worker, ceiling, proactive, repo, &base, prompt.join(" ")),
+                }) => cli::task::add(&worker, ceiling, proactive, prompt.join(" ")),
                 Some(TaskCmd::Relay {
                     worker,
                     from,
@@ -676,26 +670,13 @@ async fn main() {
                 Some(TaskCmd::Show { id }) => cli::task::show(&id),
                 Some(TaskCmd::Requeue { id }) => cli::task::requeue(&id),
             },
-            Some(WorkerCmd::Memory(cmd)) => match cmd {
-                MemoryCmd::Ls {
-                    worker,
-                    scope,
-                    scope_id,
-                } => cli::memory::ls(&worker, scope.as_deref(), scope_id.as_deref()),
-                MemoryCmd::Show { worker, id } => cli::memory::show(&worker, &id),
-                MemoryCmd::Correct {
-                    worker,
-                    id,
-                    replacement,
-                } => cli::memory::correct(&worker, &id, &replacement.join(" ")),
-                MemoryCmd::Rm { worker, id } => cli::memory::mutate("forget", &worker, &id),
-                MemoryCmd::Pin { worker, id } => cli::memory::mutate("pin", &worker, &id),
-                MemoryCmd::Unpin { worker, id } => cli::memory::mutate("unpin", &worker, &id),
-                MemoryCmd::Disable { worker, id } => cli::memory::mutate("disable", &worker, &id),
-                MemoryCmd::Enable { worker, id } => cli::memory::mutate("enable", &worker, &id),
-                MemoryCmd::Compact { worker } => cli::memory::compact(&worker),
-            },
             Some(WorkerCmd::Knowledge { name }) => cli::knowledge::run(&name),
+            Some(WorkerCmd::Restore {
+                name,
+                from,
+                channel,
+                list,
+            }) => cli::worker::restore(&name, from.as_deref(), channel.as_deref(), list),
         },
     };
 
@@ -708,6 +689,28 @@ async fn main() {
 /// `roster talk` with no worker named: on a fresh deployment scaffold "elf"
 /// and start talking — the zero-config first conversation. Otherwise show the
 /// talk help and who is available.
+/// One handler for both spellings: `roster channel …` (the noun's home) and
+/// `roster server channel …` (the pre-promotion path, kept as an alias).
+fn run_channel_cmd(cmd: Option<ChannelCmd>) -> Result<(), Box<dyn std::error::Error>> {
+    match cmd {
+        None => cli::channel::ls(false),
+        Some(ChannelCmd::Ls { json }) => cli::channel::ls(json),
+        Some(ChannelCmd::Show { channel_id }) => cli::channel::show(&channel_id),
+        Some(ChannelCmd::Trust { channel_id }) => cli::channel::set_trust(&channel_id, true),
+        Some(ChannelCmd::Untrust { channel_id }) => cli::channel::set_trust(&channel_id, false),
+        Some(ChannelCmd::Set {
+            channel_id,
+            key,
+            value,
+        }) => match (key, value) {
+            (Some(key), Some(value)) => cli::channel::set(&channel_id, &key, &value),
+            _ => cli::channel::set_help(&channel_id),
+        },
+        Some(ChannelCmd::Link { name, surfaces }) => cli::channel::link(&name, &surfaces),
+        Some(ChannelCmd::Unlink { surface_id }) => cli::channel::unlink(&surface_id),
+    }
+}
+
 async fn talk_bare(idle: u64) -> Result<(), Box<dyn std::error::Error>> {
     let workers = worker::names();
     if workers.is_empty() {
@@ -732,18 +735,16 @@ async fn talk_bare(idle: u64) -> Result<(), Box<dyn std::error::Error>> {
 /// Where each pre-clap command lives now. Kept until the muscle memory fades.
 fn legacy_pointer(first: &str) -> Option<&'static str> {
     Some(match first {
-        "imp" => "roster worker <init|ls|show|trust|run|chat|task|memory|knowledge>  (imps are now workers)",
+        "imp" => "roster worker <init|ls|show|trust|run|chat|task|knowledge>  (imps are now workers)",
         "serve" => "roster server start",
         "supervise" => "roster server start  (the daemons merged; --cap and --once moved there)",
         "listen" => "roster server start  (listeners start for every worker with a [channels] entry)",
         "deploy" => "roster server validate  (config now loads live — there is no deploy step)",
         "gates" => "roster server approvals <ls|show|approve|deny>",
-        "channel" => "roster server channel <ls|show|trust|untrust|set>",
         "connect" => "roster connection add <provider>",
         "create" => "roster worker init <name>",
         "queue" => "roster worker task <add|relay|ls|show|requeue>",
         "relay" => "roster worker task relay <worker> \"<message>\"",
-        "memory" | "notes" => "roster worker memory <ls|show|correct|rm|…> <worker>",
         "knowledge" => "roster worker knowledge <name>",
         "box" => "roster worker run <name> \"<prompt>\"",
         "session" => "roster worker chat <name>",

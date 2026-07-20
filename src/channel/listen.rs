@@ -64,7 +64,7 @@ pub async fn listen_worker(worker: &str, platform: &str, credential: &str) -> Re
         "discord" => {
             let token = field("token")?;
             eprintln!("listener {worker}: connecting the Discord gateway");
-            discord::run_gateway(worker, &token).await;
+            discord::run_gateway(worker, &token, credential).await;
             Ok(())
         }
         "slack" => {
@@ -205,11 +205,11 @@ mod tests {
             "roster-listener-test-{}.lock",
             uuid::Uuid::new_v4()
         ));
-        let first = ListenerLock::acquire_path("yuko", "discord", path.clone()).unwrap();
-        assert!(ListenerLock::acquire_path("yuko", "discord", path.clone()).is_err());
+        let first = ListenerLock::acquire_path("dobby", "discord", path.clone()).unwrap();
+        assert!(ListenerLock::acquire_path("dobby", "discord", path.clone()).is_err());
         drop(first);
         assert!(!path.exists());
-        let second = ListenerLock::acquire_path("yuko", "slack", path.clone()).unwrap();
+        let second = ListenerLock::acquire_path("dobby", "slack", path.clone()).unwrap();
         drop(second);
         assert!(!path.exists());
     }
@@ -222,13 +222,13 @@ mod tests {
         ));
         let stale = LockRecord {
             pid: u32::MAX,
-            worker: "yuko".into(),
+            worker: "dobby".into(),
             platform: "discord".into(),
             started_at: "old".into(),
             token: "old".into(),
         };
         std::fs::write(&path, serde_json::to_string(&stale).unwrap()).unwrap();
-        let lock = ListenerLock::acquire_path("yuko", "discord", path.clone()).unwrap();
+        let lock = ListenerLock::acquire_path("dobby", "discord", path.clone()).unwrap();
         drop(lock);
         assert!(!path.exists());
     }

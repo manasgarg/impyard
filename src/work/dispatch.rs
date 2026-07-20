@@ -111,8 +111,9 @@ pub async fn dispatch_loop(cap: usize, once: bool) -> Result<(), BErr> {
                     first_line(&task.prompt)
                 );
                 // Routing, not provenance: the origin channel reaches the
-                // box through the briefing while the run context stays clean
-                // (the tainting context.discord path is only for relays).
+                // box through the briefing while the run context carries no
+                // interaction content (the context.discord path, which does
+                // carry it, is only for relays).
                 let reply_to = if memory_context.channel_id.is_none() {
                     task.tags
                         .provider
@@ -134,16 +135,11 @@ pub async fn dispatch_loop(cap: usize, once: bool) -> Result<(), BErr> {
                 };
                 let t = task.clone();
                 set.spawn(async move {
-                    let code = t.repo.as_ref().map(|r| boxed::CodeSpec {
-                        repo: r.clone(),
-                        base: t.base.clone().unwrap_or_else(|| "main".into()),
-                    });
                     let spec = boxed::RunSpec {
                         worker: &t.worker,
                         run_id: &run_id,
                         task_id: &t.id,
                         ceiling_min: t.ceiling_min,
-                        code: code.as_ref(),
                         run_context: &memory_context,
                     };
                     let out = boxed::dispatch(spec, context_task)
@@ -222,6 +218,10 @@ fn task_memory_context(task: &tms::Task) -> crate::worker::memory::RunContext {
             "discord".into()
         },
         channel_id: d
+            .get("channel_id")
+            .and_then(|v| v.as_str())
+            .map(crate::channel::links::logical_of),
+        surface_id: d
             .get("channel_id")
             .and_then(|v| v.as_str())
             .map(String::from),

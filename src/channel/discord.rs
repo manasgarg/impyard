@@ -128,10 +128,183 @@ struct GwError {
 /// Run the gateway for one worker: dial out, identify, and dispatch events.
 /// Reconnects on transient errors, resuming the session when possible so no
 /// messages are dropped in the gap; stops on fatal ones (bad token / intent).
-pub async fn run_gateway(worker: &str, token: &str) {
+/// This worker's grant edge on the connection this listener runs under,
+/// looked up live so a grant edit applies without a listener restart.
+/// DMs are admitted by default (1:1, sought-out, dynamically created ids
+/// that could never be pre-listed) — a scope that names classes and leaves
+/// "dm" out is the one way to refuse them. Broken config fails closed,
+/// like dispatch does — and so does a connection file that grants this
+/// worker nothing.
+fn out_of_scope(worker: &str, credential: &str, guild_id: Option<&str>, channel_id: &str) -> bool {
+    let cfg = match crate::config::snapshot() {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!("discord: config invalid — dropping traffic until it parses");
+            return true;
+        }
+    };
+    match cfg.connections.iter().find(|c| c.name == credential) {
+        Some(c) => {
+            let class = match guild_id {
+                None => crate::config::SurfaceClass::Dm,
+                Some(_) => channel_class(channel_id),
+            };
+            !c.allows_surface(worker, guild_id, channel_id, class)
+        }
+        // No connection file for this credential (legacy [channels]-only
+        // binding) = unrestricted, exactly as before scoping existed.
+        None => false,
+    }
+}
+
+/// The listener's classification of a guild channel, from the meta recorded
+/// at GUILD_CREATE. A channel never classified is Unknown — it never
+/// matches a class entry in a scope (fail closed), though ids and servers
+/// still admit it.
+fn channel_class(channel_id: &str) -> crate::config::SurfaceClass {
+    channel_meta(channel_id)
+        .and_then(|m| {
+            m.get("class")
+                .and_then(|v| v.as_str())
+                .and_then(crate::config::SurfaceClass::parse)
+        })
+        .unwrap_or(crate::config::SurfaceClass::Unknown)
+}
+
+/// Durable per-channel replay cursor: the newest message id this listener
+/// has seen, plus the channel's guild (for the scope check at catch-up).
+/// A fresh IDENTIFY replays nothing — Discord only replays into a RESUME,
+/// and a server restart can't resume — so this cursor is what lets a
+/// starting listener fetch what arrived while the server was down.
+fn cursor_path(channel_id: &str) -> PathBuf {
+    crate::paths::channel_dir(channel_id).join("discord-cursor.json")
+}
+
+fn read_cursor(channel_id: &str) -> Option<(String, Option<String>)> {
+    let v: Value =
+        serde_json::from_str(&std::fs::read_to_string(cursor_path(channel_id)).ok()?).ok()?;
+    Some((
+        v.get("last_message_id")?.as_str()?.to_string(),
+        v.get("guild_id").and_then(Value::as_str).map(String::from),
+    ))
+}
+
+fn write_cursor(channel_id: &str, message_id: &str, guild_id: Option<&str>) {
+    let path = cursor_path(channel_id);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(
+        &path,
+        json!({ "last_message_id": message_id, "guild_id": guild_id }).to_string(),
+    );
+}
+
+/// Fetch and handle everything that arrived while no listener was connected:
+/// for every channel with a cursor, page through `GET /channels/<id>/messages
+/// ?after=<cursor>` oldest-first and run each message down the exact same
+/// path as a live event. Only channels seen at least once before can be
+/// caught up — a first-ever message in a brand-new channel during downtime
+/// stays missed until someone speaks there again.
+async fn catch_up(worker: &str, token: &str, credential: &str, bot_id: &str) {
+    let client = reqwest::Client::new();
+    let channels: Vec<String> = std::fs::read_dir(crate::paths::channels_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .collect();
+    for channel in channels {
+        let cursor = match read_cursor(&channel) {
+            Some(c) => Some(c),
+            // No cursor yet (a channel from before cursors existed): baseline
+            // it from the channel object — guild_id is load-bearing (a guild
+            // message replayed without it would read as a DM, and DMs
+            // auto-trust), and last_message_id marks "caught up to now"
+            // without replaying pre-cursor history. Discord ids are pure
+            // digits; term/slack channel dirs are not.
+            None if !channel.is_empty() && channel.bytes().all(|b| b.is_ascii_digit()) => {
+                let Ok(res) = client
+                    .get(format!("{}/channels/{channel}", base()))
+                    .header("authorization", format!("Bot {token}"))
+                    .send()
+                    .await
+                else {
+                    continue;
+                };
+                if !res.status().is_success() {
+                    continue;
+                }
+                let Ok(v) = res.json::<Value>().await else {
+                    continue;
+                };
+                let guild = v.get("guild_id").and_then(Value::as_str).map(String::from);
+                match v.get("last_message_id").and_then(Value::as_str) {
+                    Some(last) => {
+                        write_cursor(&channel, last, guild.as_deref());
+                        None // baselined; nothing to replay this round
+                    }
+                    None => None,
+                }
+            }
+            None => None,
+        };
+        let Some((mut after, guild)) = cursor else {
+            continue;
+        };
+        if out_of_scope(worker, credential, guild.as_deref(), &channel) {
+            continue;
+        }
+        // Bounded pages per channel: a week of backlog lands; an unbounded
+        // flood doesn't hold the whole catch-up hostage.
+        for _page in 0..3 {
+            let res = client
+                .get(format!(
+                    "{}/channels/{channel}/messages?after={after}&limit=100",
+                    base()
+                ))
+                .header("authorization", format!("Bot {token}"))
+                .send()
+                .await;
+            // Lost access (403/404) or a hiccup: skip this channel, never
+            // the whole pass.
+            let Ok(res) = res else { break };
+            if !res.status().is_success() {
+                break;
+            }
+            let Ok(mut msgs) = res.json::<Vec<Value>>().await else {
+                break;
+            };
+            if msgs.is_empty() {
+                break;
+            }
+            let full_page = msgs.len() == 100;
+            msgs.reverse(); // REST returns newest first; handle oldest first
+            for mut m in msgs {
+                if let Some(g) = &guild {
+                    // REST message objects carry no guild_id (only gateway
+                    // events do); the scope check and DM detection need it.
+                    m["guild_id"] = json!(g);
+                }
+                if let Some(id) = m["id"].as_str() {
+                    after = id.to_string();
+                    write_cursor(&channel, id, guild.as_deref());
+                }
+                // Roles can't be resolved from REST payloads (no member
+                // data); the empty guild map resolves conservatively.
+                handle_message(worker, &m, bot_id, &HashMap::new(), token, credential).await;
+            }
+            if !full_page {
+                break;
+            }
+        }
+    }
+}
+
+pub async fn run_gateway(worker: &str, token: &str, credential: &str) {
     let mut resume: Option<ResumeState> = None;
     loop {
-        match connect_once(worker, token, resume.take()).await {
+        match connect_once(worker, token, credential, resume.take()).await {
             Ok(()) => {}
             Err(e) if e.fatal => {
                 eprintln!("discord gateway: {} — stopping.", e.msg);
@@ -151,6 +324,7 @@ pub async fn run_gateway(worker: &str, token: &str) {
 async fn connect_once(
     worker: &str,
     token: &str,
+    credential: &str,
     resume: Option<ResumeState>,
 ) -> Result<(), GwError> {
     let transient = |m: String| GwError {
@@ -299,6 +473,20 @@ async fn connect_once(
                             "discord: connected as {} ({bot_id})",
                             d["user"]["username"].as_str().unwrap_or("?")
                         );
+                        register_dm_commands(&app_id, token).await;
+                        // A fresh session replays nothing — go fetch what
+                        // arrived while no listener was connected. Off the
+                        // read loop: catch-up REST calls and session wakes
+                        // must not stall heartbeats.
+                        let (w, t, c, b) = (
+                            worker.to_string(),
+                            token.to_string(),
+                            credential.to_string(),
+                            bot_id.clone(),
+                        );
+                        tokio::spawn(async move {
+                            catch_up(&w, &t, &c, &b).await;
+                        });
                     }
                     "RESUMED" => eprintln!("discord: resumed session (missed events replayed)"),
                     "GUILD_CREATE" => {
@@ -308,11 +496,76 @@ async fn connect_once(
                             g.name, g.channels
                         );
                         let guild_id = d["id"].as_str().unwrap_or("").to_string();
-                        register_commands(&app_id, &guild_id, token).await;
+                        // A scoped listener doesn't advertise commands in
+                        // guilds it won't act in: the guild must be admitted
+                        // by scope, or contain a scoped channel (the payload
+                        // lists the guild's channels). Ingest either way, for
+                        // name resolution in logs.
+                        let guild_admitted = match crate::config::snapshot() {
+                            Err(_) => false,
+                            Ok(cfg) => {
+                                match cfg.connections.iter().find(|c| c.name == credential) {
+                                    None => true,
+                                    Some(c) => match c.grant_for(worker) {
+                                        // A file that grants this worker nothing
+                                        // admits nothing.
+                                        None => false,
+                                        Some(r) if r.is_empty() => true,
+                                        Some(_) => {
+                                            c.allows_surface(
+                                                worker,
+                                                Some(&guild_id),
+                                                "",
+                                                crate::config::SurfaceClass::Unknown,
+                                            ) || d["channels"]
+                                                .as_array()
+                                                .map(|chs| {
+                                                    chs.iter()
+                                                        .filter_map(|ch| ch["id"].as_str())
+                                                        .any(|id| {
+                                                            c.allows_surface(
+                                                                worker,
+                                                                None,
+                                                                id,
+                                                                channel_class(id),
+                                                            )
+                                                        })
+                                                })
+                                                .unwrap_or(false)
+                                        }
+                                    },
+                                }
+                            }
+                        };
+                        if guild_admitted {
+                            register_commands(&app_id, &guild_id, token).await;
+                        }
                         guilds.insert(guild_id, g);
                     }
-                    "MESSAGE_CREATE" => handle_message(worker, d, &bot_id, &guilds, token).await,
+                    "MESSAGE_CREATE" => {
+                        // The replay cursor advances on every in-scope message
+                        // seen live — bot-authored ones included, so catch-up
+                        // never refetches the bot's own replies.
+                        let ch = d["channel_id"].as_str().unwrap_or("");
+                        let gid = d["guild_id"].as_str();
+                        if !ch.is_empty() && !out_of_scope(worker, credential, gid, ch) {
+                            if let Some(id) = d["id"].as_str() {
+                                write_cursor(ch, id, gid);
+                            }
+                        }
+                        handle_message(worker, d, &bot_id, &guilds, token, credential).await
+                    }
                     "INTERACTION_CREATE" => {
+                        // The same attachment rule as messages: an interaction
+                        // from an out-of-scope surface doesn't exist for us.
+                        if out_of_scope(
+                            worker,
+                            credential,
+                            d["guild_id"].as_str(),
+                            d["channel_id"].as_str().unwrap_or(""),
+                        ) {
+                            continue;
+                        }
                         // Handle interactions off the read loop: a slow command
                         // (e.g. an approval that sends email) must not delay the
                         // NEXT interaction's 3-second deferral deadline.
@@ -382,19 +635,36 @@ fn ingest_guild(d: &Value) -> Guild {
         }
     }
     // GUILD_CREATE carries every channel's name — persist them so `channel
-    // ls/show` can say "#general @ rototo" instead of a snowflake id.
+    // ls/show` can say "#general @ rototo" instead of a snowflake id — and
+    // its permission overwrites, from which the listener classifies the
+    // surface: a channel whose overwrites deny VIEW_CHANNEL to @everyone
+    // (role id == guild id) is "private", the rest are "public". Scope
+    // evaluation consults this classification.
     let guild_name = d["name"].as_str().unwrap_or("");
     if let Some(channels) = d["channels"].as_array() {
         for c in channels {
             let (Some(id), Some(name)) = (c["id"].as_str(), c["name"].as_str()) else {
                 continue;
             };
+            const VIEW_CHANNEL: u64 = 1 << 10;
+            let hidden_from_everyone = c["permission_overwrites"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|o| {
+                    o["id"].as_str() == Some(guild_id)
+                        && o["deny"]
+                            .as_str()
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .is_some_and(|deny| deny & VIEW_CHANNEL != 0)
+                });
             write_channel_meta(
                 id,
                 &serde_json::json!({
                     "platform": "discord",
                     "server": guild_name,
                     "name": name,
+                    "class": if hidden_from_everyone { "private" } else { "public" },
                 }),
             );
         }
@@ -447,27 +717,38 @@ async fn handle_message(
     bot_id: &str,
     guilds: &HashMap<String, Guild>,
     token: &str,
+    credential: &str,
 ) {
     // Never react to bots (including ourselves) — avoids reply loops.
     if d["author"]["bot"].as_bool().unwrap_or(false) {
         return;
     }
-    let channel_id = d["channel_id"].as_str().unwrap_or("");
-    if channel_id.is_empty() {
+    // The surface is where the message physically arrived; the channel is
+    // the conversation it belongs to — identical until an operator links.
+    let surface_id = d["channel_id"].as_str().unwrap_or("");
+    if surface_id.is_empty() {
+        return;
+    }
+    let channel_id = crate::channel::links::logical_of(surface_id);
+    let channel_id = channel_id.as_str();
+    // Attachment rule: an out-of-scope surface doesn't exist for this
+    // listener — not persisted, not answered, no attachments fetched.
+    if out_of_scope(worker, credential, d["guild_id"].as_str(), surface_id) {
         return;
     }
     let is_dm = d["guild_id"].as_str().is_none();
     if is_dm {
-        if let Err(e) = set_channel_trust(channel_id, true) {
+        if let Err(e) = set_channel_trust(surface_id, true) {
             // DMs are always trusted (1:1, sought-out); a failure here isn't
             // user-facing, but it must not pass unnoticed.
-            eprintln!("discord: could not mark DM channel {channel_id} trusted: {e}");
+            eprintln!("discord: could not mark DM channel {surface_id} trusted: {e}");
         }
         write_channel_meta(
-            channel_id,
+            surface_id,
             &json!({
                 "platform": "discord",
                 "name": format!("DM with {}", d["author"]["username"].as_str().unwrap_or("?")),
+                "class": "dm",
             }),
         );
     }
@@ -475,9 +756,28 @@ async fn handle_message(
     let author = d["author"]["username"].as_str().unwrap_or("?");
     let content = d["content"].as_str().unwrap_or("");
 
+    // Wake rule: a DM, an @mention, or a channel in "all" mode. In "mention"
+    // mode ambient messages are persisted but don't spawn a run. Evaluated
+    // before persisting so a waking message can snapshot the history it is
+    // about to join: the listener handles its events one at a time, so
+    // everything on file right now is exactly "the channel before this
+    // message" — no id matching, no race.
+    let mentioned = d["mentions"]
+        .as_array()
+        .map(|m| m.iter().any(|u| u["id"].as_str() == Some(bot_id)))
+        .unwrap_or(false);
+    let wakes = is_dm || mentioned || channel_mode(channel_id) == "all";
+    let history = if wakes {
+        recent_messages(channel_id, HISTORY_SNAPSHOT_MAX)
+    } else {
+        Vec::new()
+    };
+
     // Persist to the channel's history and download any attachments.
     let record = json!({
-        "ts": now_rfc3339(),
+        // Discord's own send time, so caught-up messages land in history
+        // with when they were SAID, not when the listener finally saw them.
+        "ts": d["timestamp"].as_str().map(String::from).unwrap_or_else(now_rfc3339),
         "author_id": d["author"]["id"].as_str().unwrap_or(""),
         "author": author, "role": role, "content": content,
         "attachments": d["attachments"].as_array().map(|a| a.iter().filter_map(|x| x["filename"].as_str()).collect::<Vec<_>>()).unwrap_or_default(),
@@ -485,13 +785,7 @@ async fn handle_message(
     persist_message(channel_id, &record);
     download_attachments(channel_id, &d["attachments"]).await;
 
-    // Wake rule: a DM, an @mention, or a channel in "all" mode. In "mention"
-    // mode ambient messages are persisted but don't spawn a run.
-    let mentioned = d["mentions"]
-        .as_array()
-        .map(|m| m.iter().any(|u| u["id"].as_str() == Some(bot_id)))
-        .unwrap_or(false);
-    if !(is_dm || mentioned || channel_mode(channel_id) == "all") {
+    if !wakes {
         return;
     }
 
@@ -505,10 +799,20 @@ async fn handle_message(
     } else {
         " [group chat; you were not directly addressed — reply only if useful]"
     };
-    let text = format!("{content}{hint}");
+    // In a linked channel the reply goes where the person spoke THIS time —
+    // the host names the surface per turn, so the worker experiences one
+    // conversation and just addresses each reply as directed. Singleton
+    // channels keep today's turn bytes exactly.
+    let routing = if channel_id != surface_id {
+        format!(" [arrived via Discord — reply with discord_send to channel id {surface_id}]")
+    } else {
+        String::new()
+    };
+    let text = format!("{content}{hint}{routing}");
     let context = crate::worker::memory::RunContext {
         provider: "discord".into(),
         channel_id: Some(channel_id.to_string()),
+        surface_id: Some(surface_id.to_string()),
         user_id: d["author"]["id"].as_str().map(String::from),
         message_id: d["id"].as_str().map(String::from),
         thread_ts: None, // Discord has no Slack-style thread ts
@@ -517,8 +821,23 @@ async fn handle_message(
         inbound: false, // live channel context carries ids; inbound marks relay tasks
     };
     eprintln!("discord: {author} ({role}) in {channel_id} → session");
-    route_to_session(worker, channel_id, author.to_string(), text, context, token).await;
+    route_to_session(
+        worker,
+        channel_id,
+        surface_id,
+        author.to_string(),
+        text,
+        context,
+        history,
+        token,
+    )
+    .await;
 }
+
+/// How many records a waking message snapshots for a fresh session's first
+/// turn. Generous on purpose — the context policy's `history_max_messages` /
+/// `history_max_chars` do the real trimming at compile time.
+pub(crate) const HISTORY_SNAPSHOT_MAX: usize = 50;
 
 // ── conversation sessions: one warm box per active channel ────────────────────
 
@@ -545,19 +864,25 @@ const SESSION_IDLE_SECS: u64 = 90;
 async fn route_to_session(
     worker: &str,
     channel_id: &str,
+    surface_id: &str,
     author_label: String,
     text: String,
     context: crate::worker::memory::RunContext,
+    history: Vec<Value>,
     token: &str,
 ) {
     let start_context = context.clone();
-    // Key sessions by (worker, channel): two workers can share a channel, and a
-    // channel-only key would route one worker's traffic into the other's box.
+    // Key sessions by (worker, LOGICAL channel): two workers can share a
+    // channel, and a channel-only key would route one worker's traffic into
+    // the other's box. Linked same-provider surfaces land in one session.
+    // Typing indicators and failure notes go to the SURFACE the person is
+    // actually looking at.
     let key = session_key(worker, channel_id);
     let message = crate::run::boxed::SessionMessage {
         text,
         author_label,
         context,
+        history,
     };
     let delivered = {
         let map = sessions().lock().unwrap();
@@ -567,12 +892,14 @@ async fn route_to_session(
                     text: message.text.clone(),
                     author_label: message.author_label.clone(),
                     context: message.context.clone(),
+                    // A live session already holds its own turns.
+                    history: Vec::new(),
                 })
                 .is_ok(),
             None => false,
         }
     };
-    spawn_typing(channel_id, token);
+    spawn_typing(surface_id, token);
     if delivered {
         return;
     }
@@ -581,7 +908,7 @@ async fn route_to_session(
     let _ = tx.try_send(message);
     sessions().lock().unwrap().insert(key.clone(), tx);
     let (w, run_id) = (worker.to_string(), crate::run::boxed::new_run_id());
-    let (channel_owned, token_owned) = (channel_id.to_string(), token.to_string());
+    let (channel_owned, token_owned) = (surface_id.to_string(), token.to_string());
     let session_map_key = key;
     tokio::spawn(async move {
         // Reduce the outcome to a Send-safe String before any await below.
@@ -676,7 +1003,8 @@ async fn trigger_typing(channel_id: &str, token: &str) {
 
 // ── slash commands (the admin surface) ────────────────────────────────────────
 
-/// Command definitions registered per guild (instant, unlike global). Scoped to
+/// Command definitions, registered per guild (instant, unlike global) and
+/// globally for the bot's DMs, where guild commands never appear. Scoped to
 /// what's safe: the approval desk, the queue, and channel trust.
 fn command_defs() -> Value {
     json!([
@@ -697,7 +1025,7 @@ fn command_defs() -> Value {
             { "type": 1, "name": "show", "description": "One session's record", "options": [{ "type": 3, "name": "run", "description": "Run id", "required": true }] }
         ]},
         { "name": "worker", "description": "The worker itself", "options": [
-            { "type": 1, "name": "show", "description": "Queue, gates, memory at a glance" },
+            { "type": 1, "name": "show", "description": "Queue and gates at a glance" },
             { "type": 1, "name": "trust", "description": "Per-action trust and earned history" }
         ]},
         { "name": "channel", "description": "Channel settings", "options": [
@@ -707,34 +1035,6 @@ fn command_defs() -> Value {
             { "type": 1, "name": "mode", "description": "How the worker wakes here", "options": [
                 { "type": 3, "name": "mode", "description": "all = every message, mention = only when @mentioned", "required": true,
                   "choices": [{ "name": "all", "value": "all" }, { "name": "mention", "value": "mention" }] }
-            ]},
-            { "type": 1, "name": "memory", "description": "Enable or disable memory in this channel", "options": [
-                { "type": 3, "name": "state", "description": "on or off", "required": true,
-                  "choices": [{ "name": "on", "value": "on" }, { "name": "off", "value": "off" }] }
-            ]},
-            { "type": 1, "name": "memory-inferred", "description": "Choose whether inferred channel notes need review", "options": [
-                { "type": 3, "name": "state", "description": "auto or review", "required": true,
-                  "choices": [{ "name": "auto", "value": "auto" }, { "name": "review", "value": "review" }] }
-            ]},
-            { "type": 1, "name": "memory-kinds", "description": "Limit memory kinds in this channel", "options": [
-                { "type": 3, "name": "kinds", "description": "default or comma-separated kinds", "required": true }
-            ]},
-            { "type": 1, "name": "memory-retention", "description": "Shorten channel memory retention", "options": [
-                { "type": 3, "name": "days", "description": "default or a positive number of days", "required": true }
-            ]}
-        ]},
-        { "name": "memory", "description": "Inspect or correct scoped memory", "options": [
-            { "type": 1, "name": "show", "description": "Show your and this channel's visible memories" },
-            { "type": 1, "name": "ls", "description": "Notes by scope (admin)", "options": [
-                { "type": 3, "name": "scope", "description": "worker, channel, or user", "required": true,
-                  "choices": [{ "name": "worker", "value": "worker" }, { "name": "channel", "value": "channel" }, { "name": "user", "value": "user" }] }
-            ]},
-            { "type": 1, "name": "forget", "description": "Forget a memory", "options": [
-                { "type": 3, "name": "id", "description": "Memory id", "required": true }
-            ]},
-            { "type": 1, "name": "correct", "description": "Correct a memory", "options": [
-                { "type": 3, "name": "id", "description": "Memory id", "required": true },
-                { "type": 3, "name": "text", "description": "Complete corrected note", "required": true }
             ]}
         ]},
         { "name": "purpose", "description": "This channel's purpose for the worker", "options": [
@@ -767,6 +1067,34 @@ async fn register_commands(app_id: &str, guild_id: &str, token: &str) {
             r.status()
         ),
         Err(e) => eprintln!("discord: register commands failed: {e}"),
+    }
+}
+
+/// The same commands, registered globally but limited to the bot's DMs
+/// (contexts: [1] = BOT_DM). Guild channels are covered by the per-guild
+/// registration above; without the context limit the global copies would
+/// show up there too, as duplicates.
+async fn register_dm_commands(app_id: &str, token: &str) {
+    if app_id.is_empty() {
+        return;
+    }
+    let mut defs = command_defs();
+    if let Some(list) = defs.as_array_mut() {
+        for cmd in list {
+            cmd["contexts"] = json!([1]);
+            cmd["integration_types"] = json!([0]);
+        }
+    }
+    let res = reqwest::Client::new()
+        .put(format!("{}/applications/{app_id}/commands", base()))
+        .header("authorization", format!("Bot {token}"))
+        .json(&defs)
+        .send()
+        .await;
+    match res {
+        Ok(r) if r.status().is_success() => {}
+        Ok(r) => eprintln!("discord: register DM commands → {}", r.status()),
+        Err(e) => eprintln!("discord: register DM commands failed: {e}"),
     }
 }
 
@@ -865,7 +1193,8 @@ async fn run_command(worker: &str, d: &Value, role: &str, caller: &str) -> Strin
         .unwrap_or("");
     let memory_context = crate::worker::memory::RunContext {
         provider: "discord".into(),
-        channel_id: Some(channel_id.to_string()).filter(|s| !s.is_empty()),
+        channel_id: Some(crate::channel::links::logical_of(channel_id)).filter(|s| !s.is_empty()),
+        surface_id: Some(channel_id.to_string()).filter(|s| !s.is_empty()),
         user_id: Some(caller_id.to_string()).filter(|s| !s.is_empty()),
         message_id: None,
         thread_ts: None,
@@ -909,27 +1238,10 @@ pub struct ChannelSettings {
     /// "all" (wake on every message) | "mention" (wake only on @mention/DM).
     #[serde(default = "default_mode")]
     pub mode: String,
-    /// Channel-local memory controls may only make the worker policy stricter.
-    #[serde(default = "default_memory_enabled")]
-    pub memory_enabled: bool,
-    #[serde(default)]
-    pub memory_recall_max_notes: Option<usize>,
-    #[serde(default)]
-    pub memory_recall_char_budget: Option<usize>,
-    #[serde(default)]
-    pub memory_inferred_auto: bool,
-    #[serde(default)]
-    pub memory_allowed_kinds: Option<Vec<String>>,
-    #[serde(default)]
-    pub memory_retention_days: Option<u64>,
 }
 
 fn default_mode() -> String {
     "all".to_string()
-}
-
-fn default_memory_enabled() -> bool {
-    true
 }
 
 impl Default for ChannelSettings {
@@ -937,12 +1249,6 @@ impl Default for ChannelSettings {
         Self {
             trusted: false,
             mode: default_mode(),
-            memory_enabled: true,
-            memory_recall_max_notes: None,
-            memory_recall_char_budget: None,
-            memory_inferred_auto: false,
-            memory_allowed_kinds: None,
-            memory_retention_days: None,
         }
     }
 }
@@ -998,122 +1304,42 @@ fn mutate_settings(f: impl FnOnce(&mut HashMap<String, ChannelSettings>)) -> Res
 }
 
 /// Is this channel marked trusted? (DMs are marked trusted when first seen.)
+/// Settings key on the LOGICAL channel: a surface id resolves to its linked
+/// channel first, so linked surfaces share one designation.
 pub fn channel_trusted(channel_id: &str) -> bool {
+    let channel_id = crate::channel::links::logical_of(channel_id);
     load_settings()
-        .get(channel_id)
+        .get(&channel_id)
         .map(|s| s.trusted)
         .unwrap_or(false)
 }
 
 pub fn set_channel_trust(channel_id: &str, trusted: bool) -> Result<(), String> {
+    let channel_id = crate::channel::links::logical_of(channel_id);
     // Hot path: DMs re-assert trust on every message. Skip the locked write when
     // nothing changes (the read sees a whole file thanks to atomic writes).
-    if channel_trusted(channel_id) == trusted {
+    if channel_trusted(&channel_id) == trusted {
         return Ok(());
     }
     mutate_settings(|m| {
-        m.entry(channel_id.to_string()).or_default().trusted = trusted;
+        m.entry(channel_id).or_default().trusted = trusted;
     })
 }
 
 /// The channel's response mode: "all" (default) or "mention".
 pub fn channel_mode(channel_id: &str) -> String {
+    let channel_id = crate::channel::links::logical_of(channel_id);
     load_settings()
-        .get(channel_id)
+        .get(&channel_id)
         .map(|s| s.mode.clone())
         .unwrap_or_else(default_mode)
 }
 
 pub fn set_channel_mode(channel_id: &str, mode: &str) -> Result<(), String> {
+    let channel_id = crate::channel::links::logical_of(channel_id);
     let mode = mode.to_string();
     mutate_settings(|m| {
-        m.entry(channel_id.to_string()).or_default().mode = mode;
-    })
-}
-
-pub fn channel_memory_enabled(channel_id: &str) -> bool {
-    load_settings()
-        .get(channel_id)
-        .map(|s| s.memory_enabled)
-        .unwrap_or(true)
-}
-
-pub fn channel_memory_recall_max_notes(channel_id: &str) -> Option<usize> {
-    load_settings()
-        .get(channel_id)
-        .and_then(|s| s.memory_recall_max_notes)
-}
-
-pub fn channel_memory_recall_char_budget(channel_id: &str) -> Option<usize> {
-    load_settings()
-        .get(channel_id)
-        .and_then(|s| s.memory_recall_char_budget)
-}
-
-pub fn channel_memory_inferred_auto(channel_id: &str) -> bool {
-    load_settings()
-        .get(channel_id)
-        .map(|s| s.memory_inferred_auto)
-        .unwrap_or(false)
-}
-
-pub fn channel_memory_allowed_kinds(channel_id: &str) -> Option<Vec<String>> {
-    load_settings()
-        .get(channel_id)
-        .and_then(|s| s.memory_allowed_kinds.clone())
-}
-
-pub fn channel_memory_retention_days(channel_id: &str) -> Option<u64> {
-    load_settings()
-        .get(channel_id)
-        .and_then(|s| s.memory_retention_days)
-}
-
-pub fn set_channel_memory_inferred_auto(channel_id: &str, enabled: bool) -> Result<(), String> {
-    mutate_settings(|m| {
-        m.entry(channel_id.to_string())
-            .or_default()
-            .memory_inferred_auto = enabled;
-    })
-}
-
-pub fn set_channel_memory_allowed_kinds(
-    channel_id: &str,
-    kinds: Option<Vec<String>>,
-) -> Result<(), String> {
-    mutate_settings(|m| {
-        m.entry(channel_id.to_string())
-            .or_default()
-            .memory_allowed_kinds = kinds;
-    })
-}
-
-pub fn set_channel_memory_retention_days(
-    channel_id: &str,
-    days: Option<u64>,
-) -> Result<(), String> {
-    mutate_settings(|m| {
-        m.entry(channel_id.to_string())
-            .or_default()
-            .memory_retention_days = days;
-    })
-}
-
-pub fn set_channel_memory(channel_id: &str, enabled: bool) -> Result<(), String> {
-    mutate_settings(|m| {
-        m.entry(channel_id.to_string()).or_default().memory_enabled = enabled;
-    })
-}
-
-pub fn set_channel_memory_budget(
-    channel_id: &str,
-    notes: Option<usize>,
-    chars: Option<usize>,
-) -> Result<(), String> {
-    mutate_settings(|m| {
-        let entry = m.entry(channel_id.to_string()).or_default();
-        entry.memory_recall_max_notes = notes;
-        entry.memory_recall_char_budget = chars;
+        m.entry(channel_id).or_default().mode = mode;
     })
 }
 
@@ -1121,10 +1347,35 @@ pub fn channel_settings_all() -> HashMap<String, ChannelSettings> {
     load_settings()
 }
 
+/// Fold newly linked surfaces' settings entries into their logical
+/// channel's (channel link): member entries are removed — reads resolve to
+/// the channel from here on — the strictest wake mode survives, and the
+/// channel is trusted (v1 links 1:1 surfaces only, which are trusted by
+/// definition; docs/channels.md).
+pub fn absorb_settings(logical: &str, members: &[String]) -> Result<(), String> {
+    mutate_settings(|m| {
+        let mut mention = m.get(logical).map(|s| s.mode == "mention").unwrap_or(false);
+        for sid in members {
+            if let Some(s) = m.remove(sid) {
+                mention = mention || s.mode == "mention";
+            }
+        }
+        let entry = m.entry(logical.to_string()).or_default();
+        entry.trusted = true;
+        if mention {
+            entry.mode = "mention".into();
+        }
+    })
+}
+
 // ── channel store (history + uploads), under the read-only repo mount ─────────
 
+/// The LOGICAL channel's directory: conversation material (history, files,
+/// purpose) follows the conversation, so a linked surface's material lands
+/// in its channel's dir. Surface-keyed artifacts (meta, replay cursors) call
+/// `paths::channel_dir` directly and never resolve.
 fn channel_dir(channel_id: &str) -> PathBuf {
-    paths::channel_dir(channel_id)
+    paths::channel_dir(&crate::channel::links::logical_of(channel_id))
 }
 
 /// A channel's purpose file (channels/<id>/purpose.md) — the worker's role in
@@ -1146,12 +1397,15 @@ pub(crate) fn persist_message(channel_id: &str, record: &Value) {
     }
 }
 
-/// Distinct human authors seen in a channel's history (bots aren't persisted),
-/// to tell a 1:1 conversation from a group one.
+/// Distinct human authors seen in a channel's history, to tell a 1:1
+/// conversation from a group one. The worker's own replies are on file too
+/// (role "worker" — the send executors record them); they don't make a
+/// conversation a group.
 pub(crate) fn distinct_human_authors(channel_id: &str) -> usize {
     use std::collections::HashSet;
     recent_messages(channel_id, 500)
         .iter()
+        .filter(|m| m["role"].as_str() != Some("worker"))
         .filter_map(|m| m["author_id"].as_str().map(String::from))
         .collect::<HashSet<_>>()
         .len()
@@ -1202,6 +1456,31 @@ async fn download_attachments(channel_id: &str, attachments: &Value) {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn replay_cursor_roundtrips_with_and_without_guild() {
+        let _guard = crate::statefile::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("ROSTER_ROOT", dir.path());
+
+        // A guild channel keeps its guild id — the field that stops a
+        // caught-up guild message from reading as an auto-trusted DM.
+        write_cursor("111", "9001", Some("g1"));
+        assert_eq!(
+            read_cursor("111"),
+            Some(("9001".to_string(), Some("g1".to_string())))
+        );
+        // A DM has none, and stays that way.
+        write_cursor("222", "9002", None);
+        assert_eq!(read_cursor("222"), Some(("9002".to_string(), None)));
+        // Advancing overwrites in place.
+        write_cursor("111", "9010", Some("g1"));
+        assert_eq!(read_cursor("111").unwrap().0, "9010");
+        // No cursor file → no catch-up claim.
+        assert_eq!(read_cursor("333"), None);
+    }
 
     /// A minimal Discord REST stand-in: counts typing triggers, answers message
     /// posts with an id. One connection per request (the client is per-call).

@@ -303,11 +303,11 @@ mod tests {
     #[test]
     fn scope_matching_is_ancestor_based() {
         assert!(scope_applies("org", "org"));
-        assert!(scope_applies("org", "org/yuko"));
-        assert!(scope_applies("org", "org/team/yuko"));
-        assert!(scope_applies("org/team", "org/team/yuko"));
+        assert!(scope_applies("org", "org/dobby"));
+        assert!(scope_applies("org", "org/team/dobby"));
+        assert!(scope_applies("org/team", "org/team/dobby"));
         assert!(!scope_applies("org/team", "org/other"));
-        assert!(!scope_applies("org/yuko", "org")); // a worker limit doesn't govern the org
+        assert!(!scope_applies("org/dobby", "org")); // a worker limit doesn't govern the org
     }
 
     #[test]

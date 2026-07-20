@@ -15,10 +15,11 @@ pub struct KnowledgePolicy {
     /// human gate (confirm_bulk_delete). History makes deletion recoverable;
     /// a quiet bulk wipe still deserves a speed bump.
     pub max_deletions_ungated: usize,
-    /// The memory/knowledge boundary (docs/knowledge.md):
-    /// "clean-room" — only untainted runs get a writable knowledge clone
-    /// (tainted runs read-only, clean runs recall-free); "any-run" — legacy
-    /// behavior, participant scanning only.
+    /// The default write contract for gated repos (docs/repos.md):
+    /// "clean-room" — only runs that carried no interaction content get a
+    /// writable clone; "any-run" — participant scanning only. A host-repo
+    /// connection file may declare its own `write_from`, which beats this
+    /// default for that repo.
     pub write_from: String,
 }
 
@@ -34,10 +35,27 @@ impl Default for KnowledgePolicy {
     }
 }
 
+/// The worker's durable store (worker/store.rs): rotation depth for the
+/// rsync snapshots taken after every writable run and by the daily sweep.
+/// 0 disables snapshotting (an explicit operator choice — the store is then
+/// unrecoverable after a bad run).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StorePolicy {
+    pub snapshots: usize,
+}
+
+impl Default for StorePolicy {
+    fn default() -> Self {
+        Self { snapshots: 14 }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StoragePolicy {
     pub knowledge: KnowledgePolicy,
+    pub store: StorePolicy,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

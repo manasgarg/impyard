@@ -21,6 +21,7 @@ pub async fn chat(worker: &str, idle: u64) -> Result<(), BErr> {
                 text: l,
                 author_label: "stdin".into(),
                 context: crate::worker::memory::RunContext::default(),
+                history: Vec::new(),
             };
             if tx.send(msg).await.is_err() {
                 break;
@@ -60,6 +61,7 @@ async fn ensure_server(interactive: bool) -> Result<(), BErr> {
     if !interactive {
         return Err("the server isn't running — start it: roster server start".into());
     }
+    crate::util::sane_line_discipline();
     eprint!("the server isn't running — start it now? [y/N] ");
     use std::io::Write;
     let _ = std::io::stderr().flush();
@@ -75,15 +77,22 @@ async fn ensure_server(interactive: bool) -> Result<(), BErr> {
         .create(true)
         .append(true)
         .open(&log_path)?;
-    // Its own process group: Ctrl-C in talk must not take the daemon down.
+    // Its own session, no controlling terminal: Ctrl-C in talk must not take
+    // the daemon down, and nothing under the daemon may ever touch this
+    // shell's tty.
     use std::os::unix::process::CommandExt;
-    std::process::Command::new(std::env::current_exe()?)
-        .args(["server", "start"])
+    let mut cmd = std::process::Command::new(std::env::current_exe()?);
+    cmd.args(["server", "start"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(log.try_clone()?))
-        .stderr(std::process::Stdio::from(log))
-        .process_group(0)
-        .spawn()?;
+        .stderr(std::process::Stdio::from(log));
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    cmd.spawn()?;
     eprintln!("starting server (log: {}) …", log_path.display());
     for _ in 0..40 {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -194,6 +203,20 @@ fn stdin_termios() -> Option<libc::termios> {
     }
 }
 
+/// Puts the snapshot back when dropped, so every exit path — error returns
+/// and panics included — hands the shell back its line discipline.
+struct TermiosGuard(Option<libc::termios>);
+
+impl Drop for TermiosGuard {
+    fn drop(&mut self) {
+        if let Some(t) = self.0.take() {
+            unsafe {
+                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
+            }
+        }
+    }
+}
+
 /// Drain a channel of display text into a writer — the writer differs by
 /// surface (readline's above-prompt printer, or plain stdout when piped).
 fn spawn_sink<F: FnMut(String) + Send + 'static>(
@@ -265,9 +288,13 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
         eprintln!("talk: could not mark {channel_id} trusted: {e}");
     }
 
+    // The terminal is a surface; linked, its conversation is the logical
+    // channel's — same history, same purpose, same store.
+    let logical = crate::channel::links::logical_of(&channel_id);
     let context = crate::worker::memory::RunContext {
         provider: "term".into(),
-        channel_id: Some(channel_id.clone()),
+        channel_id: Some(logical.clone()),
+        surface_id: Some(channel_id.clone()),
         user_id: Some(user.clone()),
         message_id: None,
         thread_ts: None,
@@ -278,9 +305,16 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
 
     let (reply_tx, reply_rx) = tokio::sync::mpsc::channel::<String>(32);
 
-    eprintln!(
-        "talking to {worker} — terminal channel {channel_id} (trusted); quiet sessions wind down and wake on your next message; /help for commands, Ctrl-D leaves"
-    );
+    if logical != channel_id {
+        let members = crate::channel::links::surfaces_of(&logical).join(", ");
+        eprintln!(
+            "talking to {worker} — channel {logical} (trusted; linked surfaces: {members}); quiet sessions wind down and wake on your next message; /help for commands, Ctrl-D leaves"
+        );
+    } else {
+        eprintln!(
+            "talking to {worker} — terminal channel {channel_id} (trusted); quiet sessions wind down and wake on your next message; /help for commands, Ctrl-D leaves"
+        );
+    }
 
     // Task runs deliver results to this channel while nobody is watching
     // (term_send). Surface whatever arrived since the terminal last displayed
@@ -299,7 +333,7 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
     }
     mark_seen(&channel_id);
 
-    let saved_termios = stdin_termios();
+    let termios_guard = TermiosGuard(stdin_termios());
     let (line_tx, mut line_rx) = tokio::sync::mpsc::channel::<String>(32);
     let (info_tx, info_rx) = tokio::sync::mpsc::channel::<String>(32);
 
@@ -440,8 +474,15 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
             let _ = info_tx.send(reply).await;
             continue;
         }
-        // Only the human side is persisted, like the other channels
-        // (continuity inside a session comes from the session itself).
+        // Snapshot before persisting, like the listeners: a fresh session's
+        // first turn carries the conversation so far; a live session ignores
+        // it (continuity inside a session comes from the session itself).
+        let history = crate::channel::discord::recent_messages(
+            &channel_id,
+            crate::channel::discord::HISTORY_SNAPSHOT_MAX,
+        );
+        // The human side is persisted here; the worker's side lands via the
+        // send executors, like the other channels.
         crate::channel::discord::persist_message(
             &channel_id,
             &serde_json::json!({
@@ -454,6 +495,7 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
             text: l,
             author_label: user.clone(),
             context: context.clone(),
+            history,
         });
         if let Some((tx, _)) = live.as_ref() {
             if let Err(back) = tx.send(msg.take().unwrap()).await {
@@ -493,11 +535,7 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
     let _ = info_sink.await;
     // The editor thread may still hold readline's raw mode; hand the shell
     // back its line discipline before leaving through it.
-    if let Some(t) = saved_termios {
-        unsafe {
-            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &t);
-        }
-    }
+    drop(termios_guard);
     eprintln!("\nleft the conversation — resume: roster talk {worker}");
     Ok(())
 }

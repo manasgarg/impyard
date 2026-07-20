@@ -1,4 +1,4 @@
-//! `roster server channel` — manage channel edges. `trust`/`untrust` is the
+//! `roster channel` — manage channels (conversations). `trust`/`untrust` is the
 //! security designation (a trusted channel's non-admin participants may
 //! administer, and the worker replies there without a gate; an untrusted
 //! channel's are content-only). Everything else is tuning, through one uniform
@@ -10,9 +10,14 @@ use crate::util::BErr;
 const SET_KEYS: &str =
     "mode, memory, memory-inferred, memory-kinds, memory-retention, memory-notes, memory-chars";
 
-/// A channel's human identity: what the listener learned ("#general @ rototo",
-/// "DM with jane"), or derived for terminal channels, or the bare id.
+/// A channel's human identity: its linked surfaces, what the listener
+/// learned ("#general @ rototo", "DM with jane"), or derived for terminal
+/// channels, or the bare id.
 pub fn describe(channel_id: &str) -> String {
+    let members = crate::channel::links::surfaces_of(channel_id);
+    if members.len() > 1 {
+        return format!("linked: {}", members.join(", "));
+    }
     if let Some(meta) = discord::channel_meta(channel_id) {
         let platform = meta.get("platform").and_then(|v| v.as_str()).unwrap_or("?");
         let name = meta.get("name").and_then(|v| v.as_str()).unwrap_or("");
@@ -40,21 +45,17 @@ pub fn ls(json: bool) -> Result<(), BErr> {
         println!("until configured, every channel defaults to untrusted, mode=all");
         return Ok(());
     }
-    println!(
-        "{:<22}  {:<28}  {:<9}  {:<7}  MEMORY",
-        "CHANNEL", "WHERE", "TRUST", "MODE"
-    );
+    println!("{:<22}  {:<28}  {:<9}  MODE", "CHANNEL", "WHERE", "TRUST");
     for (id, s) in map {
         println!(
-            "{:<22}  {:<28}  {:<9}  {:<7}  {}",
+            "{:<22}  {:<28}  {:<9}  {}",
             id,
             describe(&id),
             if s.trusted { "trusted" } else { "untrusted" },
             s.mode,
-            memory_summary(&s),
         );
     }
-    println!("\ndetails: roster server channel show <id>");
+    println!("\ndetails: roster channel show <id>");
     Ok(())
 }
 
@@ -74,6 +75,13 @@ pub fn show(channel_id: &str) -> Result<(), BErr> {
     if described != "-" {
         println!("where     {described}");
     }
+    let members = crate::channel::links::surfaces_of(channel_id);
+    if members.len() > 1 {
+        println!("surfaces");
+        for m in &members {
+            println!("  {m:<20}  {}", describe(m));
+        }
+    }
     println!(
         "trust     {}",
         if s.trusted { "trusted" } else { "untrusted" }
@@ -82,52 +90,53 @@ pub fn show(channel_id: &str) -> Result<(), BErr> {
         "mode      {:<10} (all = every message wakes the worker; mention = @mention/DM only)",
         s.mode
     );
-    println!("memory    {}", if s.memory_enabled { "on" } else { "off" });
-    println!(
-        "  inferred   {:<10} (auto = inferred notes apply; review = they gate)",
-        if s.memory_inferred_auto {
-            "auto"
-        } else {
-            "review"
-        }
-    );
-    println!(
-        "  kinds      {}",
-        s.memory_allowed_kinds
-            .as_ref()
-            .map(|v| v.join(","))
-            .unwrap_or_else(|| "default".into())
-    );
-    println!(
-        "  retention  {}",
-        s.memory_retention_days
-            .map(|n| format!("{n} days"))
-            .unwrap_or_else(|| "default".into())
-    );
-    println!(
-        "  recall     {} notes / {} chars",
-        s.memory_recall_max_notes
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "default".into()),
-        s.memory_recall_char_budget
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "default".into())
-    );
     Ok(())
 }
 
 pub fn set_trust(channel_id: &str, trusted: bool) -> Result<(), BErr> {
-    // Trust is a standing grant; a typo'd id must not pass silently.
-    if !discord::channel_settings_all().contains_key(channel_id) && describe(channel_id) == "-" {
-        eprintln!(
-            "warning: no known channel matches \"{channel_id}\" — the designation is recorded \
-             and applies if such a channel appears (known channels: roster server channel ls)"
+    // A surface id resolves to its linked channel — trust belongs to the
+    // conversation, and saying so teaches the membership.
+    let logical = crate::channel::links::logical_of(channel_id);
+    if logical != channel_id {
+        println!(
+            "surface {channel_id} belongs to channel {logical}; {} {logical}",
+            if trusted { "trusting" } else { "untrusting" }
         );
     }
-    discord::set_channel_trust(channel_id, trusted)?;
+    // Trust is a standing grant; a typo'd id must not pass silently.
+    if !discord::channel_settings_all().contains_key(&logical) && describe(&logical) == "-" {
+        eprintln!(
+            "warning: no known channel matches \"{logical}\" — the designation is recorded \
+             and applies if such a channel appears (known channels: roster channel ls)"
+        );
+    }
+    discord::set_channel_trust(&logical, trusted)?;
     println!(
-        "channel {channel_id} → {}",
+        "channel {logical} → {}",
         if trusted { "trusted" } else { "untrusted" }
+    );
+    Ok(())
+}
+
+/// `roster channel link <name> <surface>…` — declare that surfaces are one
+/// conversation. The operator's act, from the authenticated CLI; the merge
+/// of history/purpose/settings happens once, here.
+pub fn link(name: &str, surfaces: &[String]) -> Result<(), BErr> {
+    crate::channel::links::link(name, surfaces)?;
+    let members = crate::channel::links::surfaces_of(name);
+    println!("channel {name} — linked surfaces: {}", members.join(", "));
+    println!(
+        "one conversation now: shared history, purpose, trust, and channel store; \
+         replies go to whichever surface each message arrives on"
+    );
+    Ok(())
+}
+
+pub fn unlink(surface_id: &str) -> Result<(), BErr> {
+    let name = crate::channel::links::unlink(surface_id)?;
+    println!(
+        "unlinked {surface_id} from channel {name} — the channel and its material stay \
+         with the remaining members; {surface_id} starts fresh as its own channel"
     );
     Ok(())
 }
@@ -137,59 +146,13 @@ pub fn set_trust(channel_id: &str, trusted: bool) -> Result<(), BErr> {
 /// service.
 pub fn set_help(channel_id: &str) -> Result<(), BErr> {
     let s = current_settings(channel_id);
-    let current_kinds = s
-        .memory_allowed_kinds
-        .as_ref()
-        .map(|v| v.join(","))
-        .unwrap_or_else(|| "default".into());
-    let current_retention = s
-        .memory_retention_days
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| "default".into());
-    let current_notes = s
-        .memory_recall_max_notes
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| "default".into());
-    let current_chars = s
-        .memory_recall_char_budget
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| "default".into());
     println!("channel {channel_id}  ({})\n", describe(channel_id));
     println!("{:<18}  {:<34}  CURRENT", "KEY", "VALUES");
-    let rows = [
-        ("mode", "all | mention", s.mode.clone()),
-        (
-            "memory",
-            "on | off",
-            if s.memory_enabled { "on" } else { "off" }.to_string(),
-        ),
-        (
-            "memory-inferred",
-            "auto | review",
-            if s.memory_inferred_auto {
-                "auto"
-            } else {
-                "review"
-            }
-            .to_string(),
-        ),
-        ("memory-kinds", "default | kind,kind,…", current_kinds),
-        ("memory-retention", "default | days", current_retention),
-        (
-            "memory-notes",
-            "default | max notes recalled",
-            current_notes,
-        ),
-        (
-            "memory-chars",
-            "default | max chars recalled",
-            current_chars,
-        ),
-    ];
+    let rows = [("mode", "all | mention", s.mode.clone())];
     for (key, values, current) in rows {
         println!("{key:<18}  {values:<34}  {current}");
     }
-    println!("\nset one: roster server channel set {channel_id} <key> <value>");
+    println!("\nset one: roster channel set {channel_id} <key> <value>");
     Ok(())
 }
 
@@ -200,50 +163,6 @@ pub fn set(channel_id: &str, key: &str, value: &str) -> Result<(), BErr> {
                 return Err("mode must be \"all\" or \"mention\"".into());
             }
             discord::set_channel_mode(channel_id, value)?;
-        }
-        "memory" => {
-            let enabled = on_off(value)?;
-            discord::set_channel_memory(channel_id, enabled)?;
-        }
-        "memory-inferred" => {
-            let auto = match value {
-                "auto" => true,
-                "review" => false,
-                _ => return Err("memory-inferred must be \"auto\" or \"review\"".into()),
-            };
-            discord::set_channel_memory_inferred_auto(channel_id, auto)?;
-        }
-        "memory-kinds" => {
-            let kinds = parse_memory_kinds(value)?;
-            discord::set_channel_memory_allowed_kinds(channel_id, kinds)?;
-        }
-        "memory-retention" => {
-            let days = match value {
-                "default" => None,
-                v => Some(
-                    v.parse::<u64>()
-                        .ok()
-                        .filter(|n| *n > 0)
-                        .ok_or("retention wants a positive number of days, or default")?,
-                ),
-            };
-            discord::set_channel_memory_retention_days(channel_id, days)?;
-        }
-        // The recall budget is stored as one (notes, chars) pair; setting one
-        // half keeps the other as currently configured.
-        "memory-notes" => {
-            let notes = budget_value(value)?;
-            let current = current_settings(channel_id);
-            discord::set_channel_memory_budget(
-                channel_id,
-                notes,
-                current.memory_recall_char_budget,
-            )?;
-        }
-        "memory-chars" => {
-            let chars = budget_value(value)?;
-            let current = current_settings(channel_id);
-            discord::set_channel_memory_budget(channel_id, current.memory_recall_max_notes, chars)?;
         }
         other => {
             return Err(format!("unknown channel setting \"{other}\" (keys: {SET_KEYS})").into())
@@ -260,86 +179,7 @@ fn current_settings(channel_id: &str) -> ChannelSettings {
         .unwrap_or_default()
 }
 
-fn memory_summary(s: &ChannelSettings) -> String {
-    if !s.memory_enabled {
-        return "off".into();
-    }
-    format!(
-        "on ({}, kinds={}, retention={}, recall={}/{})",
-        if s.memory_inferred_auto {
-            "auto"
-        } else {
-            "review"
-        },
-        s.memory_allowed_kinds
-            .as_ref()
-            .map(|v| v.join(","))
-            .unwrap_or_else(|| "default".into()),
-        s.memory_retention_days
-            .map(|n| format!("{n}d"))
-            .unwrap_or_else(|| "default".into()),
-        s.memory_recall_max_notes
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "default".into()),
-        s.memory_recall_char_budget
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "default".into()),
-    )
-}
-
-fn on_off(value: &str) -> Result<bool, BErr> {
-    match value {
-        "on" => Ok(true),
-        "off" => Ok(false),
-        _ => Err("value must be \"on\" or \"off\"".into()),
-    }
-}
-
-fn budget_value(value: &str) -> Result<Option<usize>, BErr> {
-    match value {
-        "default" => Ok(None),
-        v => v
-            .parse::<usize>()
-            .ok()
-            .filter(|n| *n > 0)
-            .map(Some)
-            .ok_or_else(|| "recall budgets want a positive integer, or default".into()),
-    }
-}
-
-pub fn parse_memory_kinds(value: &str) -> Result<Option<Vec<String>>, BErr> {
-    if value == "default" {
-        return Ok(None);
-    }
-    let allowed = crate::worker::memory::SUPPORTED_MEMORY_KINDS;
-    let kinds: Vec<String> = value
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .collect();
-    if kinds.is_empty() || kinds.iter().any(|kind| !allowed.contains(&kind.as_str())) {
-        return Err(format!(
-            "memory kinds must be a comma-separated subset of {}",
-            allowed.join(",")
-        )
-        .into());
-    }
-    Ok(Some(kinds))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn memory_kinds_are_validated() {
-        assert!(parse_memory_kinds("default").unwrap().is_none());
-        assert!(parse_memory_kinds("research").is_err());
-        assert_eq!(
-            parse_memory_kinds("fact,interaction").unwrap().unwrap(),
-            vec!["fact", "interaction"]
-        );
-        assert!(parse_memory_kinds("fact,secrets").is_err());
-    }
 }

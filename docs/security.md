@@ -109,7 +109,7 @@ in a git repository the box never sees — runs get a plain checkout, and the
 trusted side validates and commits. Runs that contained conversation content
 get that checkout read-only: person-data cannot be laundered into the
 hard-to-erase world store, because the mount — not a text filter — enforces
-the boundary. See [knowledge.md](knowledge.md).
+the boundary. See [repos.md](repos.md).
 
 **Everything on the record.** Every gateway decision, action disposition,
 credential refresh, and spend line appends to audit logs that nothing
@@ -151,8 +151,9 @@ Security claims are worth exactly what their caveats admit:
   not yet counted, so cap model calls by count, not tokens.
 - **The participant scan is a tripwire, not a wall.** It catches names, ids,
   and handles crossing from conversations toward the knowledge store;
-  paraphrase gets past it. The hard guarantee is the read-only mount on
-  tainted runs, not the scan.
+  paraphrase gets past it. The hard guarantee is the read-only mount on runs
+  that carried interaction content ([repos.md](repos.md)'s clean-room rule),
+  not the scan.
 - **`tunnel` rules trade visibility for compatibility.** A host you tunnel
   (for cert-pinning clients) is judged on host and port only — the gateway
   can't see inside. Use them knowingly.

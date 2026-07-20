@@ -94,6 +94,28 @@ fn matches_except_method(m: &Match, req: &GovernedRequest) -> bool {
             return false;
         }
     }
+    if let Some(classes) = &m.channel_class_in {
+        // The one predicate that consults host state, by design: class scopes
+        // can't compile to static paths, so the judge reads the listener's
+        // classification of the channel named in the path (channel meta,
+        // written at GUILD_CREATE / first DM). No channel id in the path, or
+        // a channel the listener never classified, matches nothing — fail
+        // closed; the deny rule behind this one wins.
+        let class = normalize_path(&req.path)
+            .strip_prefix("/api/v10/channels/")
+            .and_then(|rest| rest.split('/').next().map(str::to_string))
+            .filter(|id| !id.is_empty())
+            .and_then(|id| crate::channel::discord::channel_meta(&id))
+            .and_then(|meta| {
+                meta.get("class")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            });
+        match class {
+            Some(c) if classes.iter().any(|want| *want == c) => {}
+            _ => return false,
+        }
+    }
     if let Some(mb) = m.max_body_size {
         if req.body_size > mb {
             return false;
@@ -210,6 +232,46 @@ mod tests {
         escape.host = "api.example.com".into();
         escape.path = "/v1/readonly/../admin".into();
         assert_eq!(judge(&escape, &p).0, Verdict::Deny);
+    }
+
+    #[test]
+    fn channel_class_predicate_reads_the_listeners_classification() {
+        let _guard = crate::statefile::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("ROSTER_ROOT", dir.path());
+        crate::channel::discord::write_channel_meta(
+            "100",
+            &serde_json::json!({ "platform": "discord", "class": "public" }),
+        );
+        crate::channel::discord::write_channel_meta(
+            "200",
+            &serde_json::json!({ "platform": "discord", "class": "private" }),
+        );
+
+        let p = policy(
+            r#"{"rules":[
+                {"name":"classes","match":{"host":["discord.com"],"pathPrefix":"/api/v10/channels","channelClassIn":["public"]},"verdict":"allow"},
+                {"name":"deny-rest","match":{"host":["discord.com"],"pathPrefix":"/api/v10/channels"},"verdict":"deny"}
+            ]}"#,
+        );
+        let mut send = req();
+        send.host = "discord.com".into();
+        send.path = "/api/v10/channels/100/messages".into();
+        assert_eq!(judge(&send, &p), (Verdict::Allow, Some("classes".into())));
+
+        // Wrong class, and a channel the listener never classified: both
+        // fall through to the deny (fail closed).
+        send.path = "/api/v10/channels/200/messages".into();
+        assert_eq!(judge(&send, &p).0, Verdict::Deny);
+        send.path = "/api/v10/channels/999/messages".into();
+        assert_eq!(judge(&send, &p).0, Verdict::Deny);
+        // No channel id in the path matches nothing either.
+        send.path = "/api/v10/channels".into();
+        assert_eq!(judge(&send, &p).0, Verdict::Deny);
+
+        std::env::remove_var("ROSTER_ROOT");
     }
 
     #[test]

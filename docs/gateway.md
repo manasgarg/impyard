@@ -126,8 +126,8 @@ request. A box holds only its own token, so attribution is un-spoofable; a
 connection with no token (host-side tooling) is attributed to `org`.
 
 Subjects are paths, and scopes match by ancestry: a rule or budget at `org`
-governs every worker; one at `org/yuko` governs only yuko. Spend rolls up the
-same way — a call by yuko debits yuko's counters *and* the org's.
+governs every worker; one at `org/dobby` governs only dobby. Spend rolls up the
+same way — a call by dobby debits dobby's counters *and* the org's.
 
 ## Budgets
 

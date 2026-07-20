@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn addr_extracts_bare_address() {
-        assert_eq!(addr_of("Yuko <bot@mg.example.com>"), "bot@mg.example.com");
+        assert_eq!(addr_of("Dobby <bot@mg.example.com>"), "bot@mg.example.com");
         assert_eq!(addr_of("bot@mg.example.com"), "bot@mg.example.com");
         assert_eq!(addr_of("  spaced@x.com "), "spaced@x.com");
     }

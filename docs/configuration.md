@@ -11,7 +11,7 @@ The files:
 
 ```
 org.toml                    org-wide policy: grants, actions, trust, budgets,
-                            memory/knowledge/context policy
+                            knowledge/context policy
 workers/<name>/worker.toml  one worker: channels, heartbeat, overlays
 workers/<name>/identity.md  who the worker is (prose, not config)
 connections/<name>.toml     one service capability (usually wizard-written)
@@ -65,9 +65,11 @@ trust    = "gate"            # default; "auto" skips the desk
 wake_on_resolve = true       # file a continuation task when the gate resolves
 ```
 
-Executors: `message-user`, `email`, `git-pr`, `identity`, `purpose`,
-`discord`, `slack`, `task`, `note`, `knowledge`. An intent with no grant is
+Executors: `message-user`, `email`, `identity`, `purpose`,
+`discord`, `slack`, `task`, `term`, `knowledge`. An intent with no grant is
 refused, not gated. See [actions-and-trust.md](actions-and-trust.md).
+(Memory has no executor: the worker writes `store/memory/` directly —
+[memory.md](memory.md).)
 
 ### `[[trust]]` — the ladder
 
@@ -129,39 +131,48 @@ model.
 | `purpose_max_chars` | 8000 |
 | `briefing_max_chars` | 4000 |
 | `task_max_chars` | 24000 |
+| `history_max_messages` | 25 |
+| `history_max_chars` | 6000 |
 
 Mandatory blocks fail rather than truncate; see [context.md](context.md).
+`history_*` bound the recent-channel-history block a fresh session's first
+turn carries (newest kept, oldest dropped; `0` disables it) — history
+truncates rather than fails, since the full record stays readable at
+`$HOME/channel`.
+
+### `[memory]` — recall bounds
+
+| key | default | meaning |
+|---|---|---|
+| `enabled` | `true` | compile the memory block at all |
+| `recall_max_notes` | 20 | active notes recalled per run (pinned first, then newest) |
+| `recall_char_budget` | 6000 | rendered block cap; oldest unpinned drop first |
+
+Recall is a bounded window into the worker's own
+`store/memory/memory.jsonl` ([memory.md](memory.md)) — the worker writes
+and curates the file; the host only reads it into each run's input.
+Worker overlays allowed, like `[context]`.
 
 ### `[knowledge]`
 
 | key | default | meaning |
 |---|---|---|
 | `enabled` | `true` | |
-| `write_from` | `"clean-room"` | `"clean-room"`: only runs without person-data may write; `"any-run"`: scan-only legacy behavior |
+| `write_from` | `"clean-room"` | the default write contract for gated repos — `"clean-room"`: only runs without person-data may write; `"any-run"`: scan-only. A `write_from` in a gated connection file beats this default for that repo ([repos.md](repos.md)) |
 | `max_file_chars` | 200000 | per-file cap |
 | `max_repo_bytes` | 1000000000 | repo size cap |
-| `max_deletions_ungated` | 20 | a `knowledge_push` deleting more files than this waits for a human gate |
+| `max_deletions_ungated` | 20 | a `repo_push` deleting more files than this waits for a human gate |
 
-### `[memory]`
+### `[store]`
 
 | key | default | meaning |
 |---|---|---|
-| `enabled` | `true` | |
-| `allowed_kinds` | all four | subset of `preference`, `fact`, `decision`, `interaction` |
-| `max_note_chars` | 2000 | |
-| `max_notes_per_scope` | 100 | |
-| `recall_max_notes` | 20 | |
-| `recall_char_budget` | 6000 | |
-| `max_retention_days` | unset | notes expire after this many days |
-| `allow_inferred_user_auto` | `false` | inferred personal facts save without review |
-| `allow_worker_auto` | `false` | worker-wide notes save without review |
-| `cross_channel_user_recall` | `false` | recall a user's memory outside its home channel |
-| `user_memory_in_groups` | `false` | recall user memory in group contexts |
+| `snapshots` | 14 | rotating store snapshots kept per worker (0 disables — the store is then unrecoverable after a bad run) |
 
 ## workers/\<name\>/worker.toml
 
 ```toml
-name = "yuko"                # must equal the folder name
+name = "dobby"                # must equal the folder name
 
 [channels]
 discord = "discord"          # vault credential for its bot (also: slack = "…")
@@ -175,7 +186,7 @@ max      = 60
 ```
 
 A worker's file may also carry its own `[[grant]]`, `[[action]]`,
-`[[trust]]`, `[[expose]]`, and `[memory]`/`[context]`/`[knowledge]`
+`[[trust]]`, `[[expose]]`, and `[context]`/`[knowledge]`
 overlays. Overlays merge over org defaults; the knowledge overlay can only
 narrow (disable features, reduce limits) — it cannot re-enable, raise, or
 relax what the org set. Two workers cannot bind the same channel credential.
@@ -192,7 +203,7 @@ stem is the vault credential name.
 | key | required | meaning |
 |---|---|---|
 | `provider` | yes | registry entry (login flow + inject template), or any name if inline inject is given |
-| `workers` / `scope` | one of the two | `workers = ["yuko"]` grants per-worker; `scope = "org"` grants fleet-wide |
+| `[grant.<worker>]` | no | availability edge, one per worker (`[grant.org]` = fleet-wide); its keys scope the edge to provider dimensions. None = connected, granted to no one. Legacy `workers = ["dobby"]` / `scope = "org"` + `[restrict]` still parse as identical edges |
 | `hosts` | yes | allowed hostnames |
 | `methods` | no (default `["*"]` — all) | allowed HTTP methods; list verbs (e.g. `["GET"]`) to narrow the grant |
 | `env` | yes | the sentinel env var the box sees |

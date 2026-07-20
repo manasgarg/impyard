@@ -37,7 +37,7 @@ pub struct FileLock {
 impl FileLock {
     /// Take the exclusive lock named `name` (resolved under `state/locks/`),
     /// blocking until it is free. The name identifies a logical resource, not a
-    /// data file — e.g. `"tms-yuko"`, `"gates-yuko"`, `"channels"`.
+    /// data file — e.g. `"tms-dobby"`, `"gates-dobby"`, `"channels"`.
     pub fn acquire(name: &str) -> io::Result<FileLock> {
         Self::acquire_path(&crate::paths::lock_file(name))
     }

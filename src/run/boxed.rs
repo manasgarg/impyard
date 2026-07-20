@@ -15,7 +15,6 @@ type BErr = Box<dyn std::error::Error>;
 
 const LOCKDOWN_NETWORK: &str = "roster-locked";
 const BOX_CA_PATH: &str = "/opt/roster/ca.crt";
-const TASKS_MOUNT: &str = "/opt/roster/tasks.json";
 const BOX_CA_BUNDLE_PATH: &str = "/opt/roster/ca-bundle.crt";
 const SENTINEL: &str = "roster-sentinel-no-real-credential-in-box";
 const CONTAINER_TEMP: &str = "/tmp:rw,nosuid,nodev,size=2147483648,mode=1777";
@@ -30,16 +29,28 @@ fn ceiling_duration(minutes: f64) -> Duration {
     Duration::from_secs_f64(secs)
 }
 
-// Writable run storage is bind-mounted at these fixed CONTAINER paths — never at
+// Writable run storage is bind-mounted at fixed CONTAINER paths — never at
 // the identical host path — so nothing inside the box (pwd, $HOME, a stack
 // trace) reveals the host layout, and the box can't name a real host path to
 // plant a file at (F4, defense in depth for the identity boundary). Read-only
-// mounts (channel history, CA, the dev engine) keep their paths: they can't be
-// used to smuggle a host-visible writable file.
-const WORKSPACE_MOUNT: &str = "/workspace";
-const SESSION_MOUNT: &str = "/session";
+// mounts can't smuggle a host-visible writable file, so the rule doesn't
+// bind them — but they mount under $HOME anyway, one legible tree.
+//
+// The tree (docs/plans/worker-environment.md): one ephemeral home per run,
+// with everything durable at `store/`, granted mounts under `mnt/`, the
+// host-written self view at `self/`, and the active channel at `channel/`.
+// `workspace/` and `session/` are plain subdirectories of the home bind,
+// not mounts.
 const PIHOME_MOUNT: &str = "/pihome";
-const WORKTREE_MOUNT: &str = "/worktree";
+const WORKSPACE_MOUNT: &str = "/pihome/workspace";
+const SESSION_MOUNT: &str = "/pihome/session";
+const STORE_MOUNT: &str = "/pihome/store";
+const MNT_BASE: &str = "/pihome/mnt";
+const SELF_MOUNT: &str = "/pihome/self";
+const CHANNEL_MOUNT: &str = "/pihome/channel";
+/// The task partition view inside the self tree — the box reads it here;
+/// authoritative writes go through the set_tasks action.
+const TASKS_FILE: &str = "/pihome/self/schedule.json";
 // The custom iptables chain that pins the box network's host egress to the
 // gateway port when `[box] egress_lockdown` is on (F3).
 const EGRESS_CHAIN: &str = "ROSTER-LOCKED";
@@ -75,6 +86,7 @@ pub async fn run_once(worker: &str, ceiling_min: f64, prompt: String) -> Result<
             reply_to: None,
         }),
         message: None,
+        history: Vec::new(),
     };
     let compiled = match crate::worker::context::compile_and_trace(&request) {
         Ok(compiled) => compiled,
@@ -88,7 +100,6 @@ pub async fn run_once(worker: &str, ceiling_min: f64, prompt: String) -> Result<
         run_id: &run_id,
         task_id: "",
         ceiling_min,
-        code: None,
         run_context: &run_context,
     };
     let (run_id, run_dir, ended_by, exit_code) = match run_box(&compiled, &spec).await {
@@ -120,13 +131,6 @@ pub struct Outcome {
     pub exit_code: Option<i32>,
 }
 
-/// A code task's working copy: a fresh git worktree of `repo` at `base`, mounted
-/// writable so the box can edit and the git-pr executor can commit + push.
-pub struct CodeSpec {
-    pub repo: String,
-    pub base: String,
-}
-
 /// Where pi + the box extensions come from.
 enum Engine {
     /// Baked into the box image at /opt/roster/engine (the default).
@@ -140,10 +144,14 @@ enum Engine {
 
 /// One trusted conversation turn delivered to a warm session. The text goes to
 /// the model; the context stays host-side and governs scoped memory actions.
+/// `history` is the listener's pre-persist snapshot of the channel's recent
+/// messages — consumed by the session's FIRST turn only (a warm session
+/// already holds its own turns), ignored on every later delivery.
 pub struct SessionMessage {
     pub text: String,
     pub author_label: String,
     pub context: crate::worker::memory::RunContext,
+    pub history: Vec<serde_json::Value>,
 }
 
 /// Everything one boxed run needs to know about itself. Bundled because the
@@ -154,7 +162,6 @@ pub struct RunSpec<'a> {
     /// Empty for runs with no queued task behind them.
     pub task_id: &'a str,
     pub ceiling_min: f64,
-    pub code: Option<&'a CodeSpec>,
     pub run_context: &'a crate::worker::memory::RunContext,
 }
 
@@ -165,8 +172,7 @@ pub async fn dispatch(
     spec: RunSpec<'_>,
     task: crate::worker::context::TaskInput,
 ) -> Result<Outcome, BErr> {
-    let kind = if spec.code.is_some() { "code" } else { "task" };
-    crate::run::runlog::start(spec.run_id, spec.worker, kind, Some(spec.task_id))?;
+    crate::run::runlog::start(spec.run_id, spec.worker, "task", Some(spec.task_id))?;
     let request = crate::worker::context::ContextRequest {
         run_id: spec.run_id.to_string(),
         phase: crate::worker::context::ContextPhase::Start,
@@ -175,6 +181,7 @@ pub async fn dispatch(
         run_context: spec.run_context.clone(),
         task: Some(task),
         message: None,
+        history: Vec::new(),
     };
     let compiled = match crate::worker::context::compile_and_trace(&request) {
         Ok(compiled) => compiled,
@@ -289,15 +296,7 @@ async fn run_box(
         run_dir,
         engine,
         mut storage,
-    } = provision_box(
-        worker,
-        run_id,
-        task_id,
-        spec.code,
-        spec.run_context,
-        Some(ceiling_min),
-    )
-    .await?;
+    } = provision_box(worker, run_id, task_id, spec.run_context, Some(ceiling_min)).await?;
     args.extend(pi_prefix(&engine, "json", &session_dir)?);
     append_cache_session_id(&mut args, &compiled.cache.route_key);
     if !compiled.system_prompt.is_empty() {
@@ -362,7 +361,12 @@ async fn run_box(
     };
     let _ = stream.await;
     // _identity drops at function end and removes the single-use token.
-    finalize_storage(&mut storage, ended_by == "exit" && status.success());
+    finalize_storage(
+        worker,
+        run_id,
+        &mut storage,
+        ended_by == "exit" && status.success(),
+    );
     let _ = crate::run::runlog::finish(run_id, ended_by, status.code());
 
     Ok((run_id.to_string(), run_dir, ended_by, status.code()))
@@ -399,6 +403,7 @@ pub async fn run_session(
         run_context: start_context.clone(),
         task: None,
         message: None,
+        history: Vec::new(),
     };
     let start = match crate::worker::context::compile_and_trace(&start_request) {
         Ok(compiled) => compiled,
@@ -416,7 +421,7 @@ pub async fn run_session(
         run_dir,
         engine,
         mut storage,
-    } = match provision_box(worker, run_id, "", None, &start_context, None).await {
+    } = match provision_box(worker, run_id, "", &start_context, None).await {
         Ok(provisioned) => provisioned,
         Err(error) => {
             crate::run::runlog::fail(run_id, Some(&error.to_string()));
@@ -475,6 +480,7 @@ pub async fn run_session(
     let mut turn_started: Option<tokio::time::Instant> = None;
     let mut rx_open = true;
     let mut busy = false; // a turn is in progress
+    let mut first_turn = true;
     let mut clean_exit = false;
     let mut pending: std::collections::VecDeque<SessionMessage> = std::collections::VecDeque::new();
     loop {
@@ -508,6 +514,10 @@ pub async fn run_session(
                         role: msg.context.role.clone(),
                         text: msg.text,
                     }),
+                    // The room's recent past rides the first turn only —
+                    // later turns live in a conversation that already holds
+                    // everything since.
+                    history: if first_turn { msg.history } else { Vec::new() },
                 };
                 let compiled = match crate::worker::context::compile_and_trace(&request) {
                     Ok(compiled) => compiled,
@@ -528,6 +538,7 @@ pub async fn run_session(
                 }
                 let _ = stdin.flush().await;
                 busy = true;
+                first_turn = false;
                 turn_started = Some(tokio::time::Instant::now());
             }
         }
@@ -572,7 +583,7 @@ pub async fn run_session(
     docker_kill(&container).await;
     let _ = child.wait().await;
     // _identity drops at function end and removes the single-use token.
-    finalize_storage(&mut storage, clean_exit);
+    finalize_storage(worker, run_id, &mut storage, clean_exit);
     let _ = crate::run::runlog::finish(
         run_id,
         if clean_exit { "idle" } else { "error" },
@@ -657,7 +668,7 @@ fn append_cache_session_id(args: &mut Vec<String>, route_key: &str) {
 }
 
 /// Everything a box needs, up to (but not including) the pi command: the lockdown
-/// check, per-run dirs, an optional code worktree, the sentinel pihome, a minted
+/// check, per-run dirs, the sentinel pihome, a minted
 /// identity token, and the docker args through the image + cwd. Shared by the
 /// one-shot runner and the rpc session runner so the lockdown/identity setup is
 /// defined exactly once.
@@ -688,7 +699,6 @@ async fn provision_box(
     worker: &str,
     run_id: &str,
     task_id: &str,
-    code: Option<&CodeSpec>,
     run_context: &crate::worker::memory::RunContext,
     ceiling_min: Option<f64>,
 ) -> Result<Provisioned, BErr> {
@@ -714,34 +724,16 @@ async fn provision_box(
         None => Engine::Baked,
     };
     let run_dir = crate::paths::run_dir(run_id);
-    let workspace = run_dir.join("workspace");
-    let session = run_dir.join("session");
-    let pihome = run_dir.join(".pihome");
+    // One per-run home dir on the host, one bind in the box. workspace/ and
+    // session/ are plain subdirectories — the host finds the transcript at
+    // home/session by convention, not by mount.
+    let pihome = run_dir.join("home");
+    let workspace = pihome.join("workspace");
+    let session = pihome.join("session");
     std::fs::create_dir_all(&workspace)?;
     std::fs::create_dir_all(&session)?;
-    let storage = crate::worker::knowledge::provision(worker, run_id, run_context.tainted())?;
-
-    // Code task: a writable git worktree on a fresh per-run branch.
-    let worktree: Option<PathBuf> = match code {
-        Some(cs) => {
-            let wt = run_dir.join("worktree");
-            let branch = format!("worker/{worker}/{run_id}");
-            let ok = std::process::Command::new("git")
-                .args(["-C", &cs.repo, "worktree", "add", "-B", &branch])
-                .arg(&wt)
-                .arg(&cs.base)
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if !ok {
-                return Err(
-                    format!("could not create worktree from {} at {}", cs.repo, cs.base).into(),
-                );
-            }
-            Some(wt)
-        }
-        None => None,
-    };
+    let store = crate::worker::store::provision(worker)?;
+    let storage = crate::worker::knowledge::provision(worker, run_id, run_context)?;
 
     let has_auth = prepare_pihome(&pihome, &home)?;
     if !has_auth && std::env::var("ANTHROPIC_API_KEY").is_err() {
@@ -809,51 +801,132 @@ async fn provision_box(
         args.extend(["-v".into(), format!("{0}:{0}:ro", repo.display())]);
     }
     append_container_temp(&mut args);
-    // Writable run storage at fixed container paths, not identical host paths (F4).
+    // The home tree, parent bind first (docker mounts by path depth anyway,
+    // but the reading order should match the mount order).
     args.extend([
         "-v".into(),
-        format!("{}:{WORKSPACE_MOUNT}", workspace.display()),
-        "-v".into(),
-        format!("{}:{SESSION_MOUNT}", session.display()),
-        "-v".into(),
         format!("{}:{PIHOME_MOUNT}", pihome.display()),
+        "-v".into(),
+        format!("{}:{STORE_MOUNT}", store.display()),
     ]);
-    if let Some(knowledge) = storage.knowledge.as_ref() {
-        let ro = if knowledge.writable { "" } else { ":ro" };
+    // Granted host mounts (host-dir / host-repo connections) under mnt/.
+    // Gated repos are provisioned per-run by the repo machinery below, not
+    // bound raw — a gated grant without provisioning must NOT fall back to
+    // a direct bind.
+    let short = crate::paths::short_worker(worker);
+    for m in &config.host_mounts {
+        if !m.applies_to(short) {
+            continue;
+        }
+        let target = format!("{MNT_BASE}/{}", m.name);
+        match &m.kind {
+            crate::config::HostMountKind::Dir { rw } => {
+                let ro = if *rw { "" } else { ":ro" };
+                args.extend(["-v".into(), format!("{}:{target}{ro}", m.path.display())]);
+            }
+            crate::config::HostMountKind::Repo { gated: false, .. } => {
+                args.extend(["-v".into(), format!("{}:{target}:ro", m.path.display())]);
+            }
+            crate::config::HostMountKind::Repo { gated: true, .. } => {
+                // Provisioned as a per-run clone + ro origin by the gated
+                // repo flow (worker::knowledge, generalized) — nothing to
+                // bind here yet.
+            }
+        }
+    }
+    // The self view: the host-written, read-only account of the worker's own
+    // footprint. A composed per-run dir holds the mountpoints so docker never
+    // creates entries inside the hand-edited config dir; nested ro binds
+    // supply the live content (dir binds stay live across rename-replace
+    // edits, which file binds would not).
+    // Every nested mountpoint is pre-created here: docker only invents
+    // missing mountpoints on the container's own layer, not inside another
+    // bind, and the underlying content shows through wherever no bind lands.
+    let self_view = run_dir.join("self");
+    std::fs::create_dir_all(self_view.join("config"))?;
+    std::fs::create_dir_all(self_view.join("journal"))?;
+    std::fs::create_dir_all(self_view.join("runs"))?;
+    std::fs::write(self_view.join("schedule.json"), b"{}")?;
+    std::fs::write(self_view.join("journal/journal.jsonl"), b"")?;
+    args.extend([
+        "-v".into(),
+        format!("{}:{SELF_MOUNT}:ro", self_view.display()),
+        "-v".into(),
+        format!(
+            "{}:{SELF_MOUNT}/config:ro",
+            crate::paths::worker_dir(short).display()
+        ),
+    ]);
+    // The worker's complete run history, raw and read-only: transcripts,
+    // compiled prompts, outcomes — every channel it served. A worker is
+    // scoped to channels that can be trusted, so its own record is its to
+    // read. The current run's dir sits inside this bind too: the underlying
+    // files show through live; nested mountpoints appear as empty dirs.
+    let runs = crate::paths::worker_runs_dir(short);
+    std::fs::create_dir_all(&runs)?;
+    args.extend([
+        "-v".into(),
+        format!("{}:{SELF_MOUNT}/runs:ro", runs.display()),
+    ]);
+    // The journal file sits in the worker's data dir alongside things the box
+    // must NOT see (queue, gates, memory.jsonl) — bind the one file, never
+    // its parent. Append-only, so a file bind stays live (no rename-replace).
+    let journal = crate::paths::worker_journal_file(short);
+    if journal.is_file() {
+        args.extend([
+            "-v".into(),
+            format!(
+                "{}:{SELF_MOUNT}/journal/journal.jsonl:ro",
+                journal.display()
+            ),
+        ]);
+    }
+    // Gated repos: each checkout mounts at mnt/<connection> (rw when the run
+    // may push), its canonical repo read-only at mnt/.origins/<connection> as
+    // a live, fetchable origin — a ref write from the box is a filesystem
+    // error.
+    for checkout in &storage.repos {
+        let ro = if checkout.writable { "" } else { ":ro" };
         args.extend([
             "-v".into(),
             format!(
                 "{}:{}{ro}",
-                knowledge.path.display(),
-                knowledge.knowledge_mount()
+                checkout.path.display(),
+                checkout.knowledge_mount()
             ),
-        ]);
-        // The canonical bare repo as a live, read-only origin: `git fetch
-        // origin` works in the box; ref writes are a filesystem error.
-        let bare = crate::worker::knowledge::bare_repo(worker);
-        args.extend([
             "-v".into(),
-            format!("{}:{}:ro", bare.display(), knowledge.origin_mount()),
+            format!("{}:{}:ro", checkout.bare.display(), checkout.origin_mount()),
         ]);
     }
+    // The active channel — the ONLY per-channel mounts, and the only thing
+    // that varies between two runs of one worker beyond task input. Other
+    // channels' histories never mount. The channel STORE is the (worker ×
+    // channel) durable space, rw exactly where channel material mounts —
+    // conversation material follows the conversation, so a run without the
+    // channel (a clean task) gets neither.
     if let Some(channel) = run_context.channel_id.as_deref() {
         let channel_dir = crate::paths::channel_dir(channel);
         if channel_dir.is_dir() {
-            args.extend(["-v".into(), format!("{0}:{0}:ro", channel_dir.display())]);
+            args.extend([
+                "-v".into(),
+                format!("{}:{CHANNEL_MOUNT}:ro", channel_dir.display()),
+            ]);
         }
+        let store = crate::paths::worker_channel_store_dir(short, channel);
+        std::fs::create_dir_all(&store)?;
+        args.extend([
+            "-v".into(),
+            format!("{}:{CHANNEL_MOUNT}/store", store.display()),
+        ]);
     }
-    // The worker's task partition as a live read view (docs/work.md):
-    // the host rewrites it in place on every mutation;
-    // authoritative writes go through the set_tasks action, file edits are
-    // scratch.
+    // The worker's task partition as a live read view inside self/
+    // (docs/work.md): the host rewrites it in place on every mutation;
+    // authoritative writes go through the set_tasks action.
     let tasks_view = crate::work::tms::ensure_view(worker);
     args.extend([
         "-v".into(),
-        format!("{}:{TASKS_MOUNT}", tasks_view.display()),
+        format!("{}:{TASKS_FILE}:ro", tasks_view.display()),
     ]);
-    if let Some(wt) = &worktree {
-        args.extend(["-v".into(), format!("{}:{WORKTREE_MOUNT}", wt.display())]);
-    }
     args.push("-v".into());
     args.push(format!("{}:{BOX_CA_PATH}:ro", host_ca.display()));
     args.push("-v".into());
@@ -864,7 +937,12 @@ async fn provision_box(
         format!("PI_CODING_AGENT_DIR={PIHOME_MOUNT}/agent"),
     ]);
     args.extend(["-e".into(), format!("ROSTER_RUN_ID={run_id}")]);
-    args.extend(["-e".into(), format!("ROSTER_TASKS_FILE={TASKS_MOUNT}")]);
+    args.extend(["-e".into(), format!("ROSTER_TASKS_FILE={TASKS_FILE}")]);
+    args.extend(["-e".into(), format!("ROSTER_STORE_DIR={STORE_MOUNT}")]);
+    args.extend(["-e".into(), format!("ROSTER_SELF_DIR={SELF_MOUNT}")]);
+    if run_context.channel_id.is_some() {
+        args.extend(["-e".into(), format!("ROSTER_CHANNEL_DIR={CHANNEL_MOUNT}")]);
+    }
     args.extend(["-e".into(), "TMPDIR=/tmp".into()]);
     // Sessions have no wall clock — only task runs get a ceiling to pace against.
     if let Some(min) = ceiling_min {
@@ -879,7 +957,29 @@ async fn provision_box(
             args.extend(["-e".into(), format!("{}={SENTINEL}", e.env)]);
         }
     }
-    if let Some(knowledge) = storage.knowledge.as_ref() {
+    // The gated-repo inventory the box tools key off: one JSON array, every
+    // checkout. ROSTER_KNOWLEDGE_* stays for the "knowledge" repo so the
+    // briefing's long-standing vocabulary keeps working.
+    if !storage.repos.is_empty() {
+        let inventory: Vec<serde_json::Value> = storage
+            .repos
+            .iter()
+            .map(|c| {
+                json!({
+                    "connection": c.connection,
+                    "dir": c.knowledge_mount(),
+                    "base": c.base_commit,
+                    "branch": c.branch(),
+                    "mode": c.mode_str(),
+                })
+            })
+            .collect();
+        args.extend([
+            "-e".into(),
+            format!("ROSTER_REPOS_JSON={}", serde_json::Value::from(inventory)),
+        ]);
+    }
+    if let Some(knowledge) = storage.repos.iter().find(|c| c.connection == "knowledge") {
         args.extend([
             "-e".into(),
             format!("ROSTER_KNOWLEDGE_DIR={}", knowledge.knowledge_mount()),
@@ -922,12 +1022,11 @@ async fn provision_box(
             args.extend(["-e".into(), format!("ANTHROPIC_API_KEY={key}")]);
         }
     }
-    let cwd = if worktree.is_some() {
-        WORKTREE_MOUNT
-    } else {
-        WORKSPACE_MOUNT
-    };
-    args.extend(["-w".into(), cwd.into(), config.box_image.clone()]);
+    args.extend([
+        "-w".into(),
+        WORKSPACE_MOUNT.into(),
+        config.box_image.clone(),
+    ]);
 
     Ok(Provisioned {
         args,
@@ -948,9 +1047,30 @@ async fn provision_box(
 /// snapshots the worktree onto refs/quarantine/run-<id> when it differs from
 /// the last landed state, and the next run's briefing points at it. Exits
 /// never integrate — landing is only ever a deliberate knowledge_push.
-fn finalize_storage(storage: &mut crate::worker::knowledge::RunStorage, _clean: bool) {
-    if let Some(checkout) = storage.knowledge.as_ref() {
+///
+/// The store gets its rotating snapshot here too — per-run is the pass that
+/// matters ("restore to just before the bad run"); the daily sweep only
+/// catches what run-end missed. Failure is reported, never fatal: the run
+/// itself already happened.
+fn finalize_storage(
+    worker: &str,
+    run_id: &str,
+    storage: &mut crate::worker::knowledge::RunStorage,
+    _clean: bool,
+) {
+    for checkout in &storage.repos {
         crate::worker::knowledge::backstop(checkout);
+    }
+    let keep = crate::worker::storage::load(worker).store.snapshots;
+    match crate::worker::store::snapshot(worker, Some(run_id), keep) {
+        Ok(Some(o)) => eprintln!(
+            "run {run_id}: store snapshot {} ({} change{})",
+            o.dir.file_name().unwrap_or_default().to_string_lossy(),
+            o.changes,
+            if o.changes == 1 { "" } else { "s" }
+        ),
+        Ok(None) => {}
+        Err(e) => eprintln!("run {run_id}: store snapshot failed — {e}"),
     }
 }
 
