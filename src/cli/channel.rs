@@ -10,9 +10,14 @@ use crate::util::BErr;
 const SET_KEYS: &str =
     "mode, memory, memory-inferred, memory-kinds, memory-retention, memory-notes, memory-chars";
 
-/// A channel's human identity: what the listener learned ("#general @ rototo",
-/// "DM with jane"), or derived for terminal channels, or the bare id.
+/// A channel's human identity: its linked surfaces, what the listener
+/// learned ("#general @ rototo", "DM with jane"), or derived for terminal
+/// channels, or the bare id.
 pub fn describe(channel_id: &str) -> String {
+    let members = crate::channel::links::surfaces_of(channel_id);
+    if members.len() > 1 {
+        return format!("linked: {}", members.join(", "));
+    }
     if let Some(meta) = discord::channel_meta(channel_id) {
         let platform = meta.get("platform").and_then(|v| v.as_str()).unwrap_or("?");
         let name = meta.get("name").and_then(|v| v.as_str()).unwrap_or("");
@@ -70,6 +75,13 @@ pub fn show(channel_id: &str) -> Result<(), BErr> {
     if described != "-" {
         println!("where     {described}");
     }
+    let members = crate::channel::links::surfaces_of(channel_id);
+    if members.len() > 1 {
+        println!("surfaces");
+        for m in &members {
+            println!("  {m:<20}  {}", describe(m));
+        }
+    }
     println!(
         "trust     {}",
         if s.trusted { "trusted" } else { "untrusted" }
@@ -82,17 +94,49 @@ pub fn show(channel_id: &str) -> Result<(), BErr> {
 }
 
 pub fn set_trust(channel_id: &str, trusted: bool) -> Result<(), BErr> {
+    // A surface id resolves to its linked channel — trust belongs to the
+    // conversation, and saying so teaches the membership.
+    let logical = crate::channel::links::logical_of(channel_id);
+    if logical != channel_id {
+        println!(
+            "surface {channel_id} belongs to channel {logical}; {} {logical}",
+            if trusted { "trusting" } else { "untrusting" }
+        );
+    }
     // Trust is a standing grant; a typo'd id must not pass silently.
-    if !discord::channel_settings_all().contains_key(channel_id) && describe(channel_id) == "-" {
+    if !discord::channel_settings_all().contains_key(&logical) && describe(&logical) == "-" {
         eprintln!(
-            "warning: no known channel matches \"{channel_id}\" — the designation is recorded \
+            "warning: no known channel matches \"{logical}\" — the designation is recorded \
              and applies if such a channel appears (known channels: roster channel ls)"
         );
     }
-    discord::set_channel_trust(channel_id, trusted)?;
+    discord::set_channel_trust(&logical, trusted)?;
     println!(
-        "channel {channel_id} → {}",
+        "channel {logical} → {}",
         if trusted { "trusted" } else { "untrusted" }
+    );
+    Ok(())
+}
+
+/// `roster channel link <name> <surface>…` — declare that surfaces are one
+/// conversation. The operator's act, from the authenticated CLI; the merge
+/// of history/purpose/settings happens once, here.
+pub fn link(name: &str, surfaces: &[String]) -> Result<(), BErr> {
+    crate::channel::links::link(name, surfaces)?;
+    let members = crate::channel::links::surfaces_of(name);
+    println!("channel {name} — linked surfaces: {}", members.join(", "));
+    println!(
+        "one conversation now: shared history, purpose, trust, and channel store; \
+         replies go to whichever surface each message arrives on"
+    );
+    Ok(())
+}
+
+pub fn unlink(surface_id: &str) -> Result<(), BErr> {
+    let name = crate::channel::links::unlink(surface_id)?;
+    println!(
+        "unlinked {surface_id} from channel {name} — the channel and its material stay \
+         with the remaining members; {surface_id} starts fresh as its own channel"
     );
     Ok(())
 }

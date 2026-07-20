@@ -375,7 +375,12 @@ pub fn migrate() -> Result<(), BErr> {
 /// `roster worker restore <name> [--from <snapshot>] [--list]` — the whole
 /// payoff of the snapshot rotation. Restoring first snapshots the current
 /// state, so a restore is always undoable by another restore.
-pub fn restore(name: &str, from: Option<&str>, list: bool) -> Result<(), BErr> {
+pub fn restore(
+    name: &str,
+    from: Option<&str>,
+    channel: Option<&str>,
+    list: bool,
+) -> Result<(), BErr> {
     crate::worker::require_worker(name)?;
     if list {
         let snaps = crate::worker::store::list_snapshots(name);
@@ -388,12 +393,12 @@ pub fn restore(name: &str, from: Option<&str>, list: bool) -> Result<(), BErr> {
         }
         return Ok(());
     }
-    let (src, undo) = crate::worker::store::restore(name, from)?;
-    println!(
-        "restored {} from {}",
-        crate::paths::worker_store_dir(name).display(),
-        src.display()
-    );
+    let (src, undo) = crate::worker::store::restore(name, from, channel)?;
+    let dest = match channel {
+        Some(c) => crate::paths::worker_channel_store_dir(name, c),
+        None => crate::paths::worker_store_dir(name),
+    };
+    println!("restored {} from {}", dest.display(), src.display());
     match undo {
         Some(u) => println!(
             "the pre-restore state was kept as {} — another restore undoes this one",

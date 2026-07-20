@@ -75,6 +75,27 @@ The locks are advisory — a run that skips them can tear a shared file.
 That is an accepted failure mode: contention is rare, and the recovery is
 a restore, not data loss.
 
+## The channel store: per-conversation space
+
+Beside the global store, each conversation gets its own durable space —
+`data/workers/<name>/channel-stores/<channel>/`, mounted read-write at
+`$HOME/channel/store` in exactly the runs that serve that channel (live
+sessions and tasks carrying its context; a clean task gets neither the
+history nor the store — conversation material follows the conversation).
+Keyed by (worker × channel): linked surfaces share it by construction, and
+two workers serving one channel never share a filesystem. The briefing
+tells the worker what belongs here: material for this room and its people,
+not its global working life.
+
+Channel stores ride the same snapshot rotation as the store (a reserved
+`.channel-stores/` subtree in each snapshot), and restore can pick either
+side:
+
+```bash
+roster worker restore dobby                      # the global store
+roster worker restore dobby --channel manas      # one conversation's space
+```
+
 ## Other granted directories
 
 The store is just the built-in instance of a **host-dir connection**; the

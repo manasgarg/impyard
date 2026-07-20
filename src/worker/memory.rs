@@ -117,7 +117,16 @@ fn active_notes(text: &str) -> Vec<Value> {
 #[serde(default)]
 pub struct RunContext {
     pub provider: String,
+    /// The logical channel this run serves (channel/links.rs) — the unit of
+    /// history, purpose, trust, and the channel store. Equal to the surface
+    /// id for every unlinked surface.
     pub channel_id: Option<String>,
+    /// The platform-native surface the triggering message arrived on — the
+    /// ground truth of where it physically happened, and the reply target.
+    /// Absent on records from before the surface/channel split (there the
+    /// channel id IS the surface).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surface_id: Option<String>,
     pub user_id: Option<String>,
     pub message_id: Option<String>,
     /// Slack thread the inbound message belongs to (its own ts, or the parent's).

@@ -1434,6 +1434,7 @@ mod tests {
         crate::worker::memory::RunContext {
             provider: "term".into(),
             channel_id: channel.map(String::from),
+            surface_id: None,
             user_id: channel.map(|_| "u1".to_string()),
             message_id: None,
             thread_ts: None,

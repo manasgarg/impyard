@@ -131,7 +131,9 @@ fn snapshot_locked(
         .arg("--itemize-changes")
         // The store is inert bytes, but locks are coordination state, not
         // content — a snapshot (and a restore) must not carry them.
-        .arg("--exclude=/.locks");
+        .arg("--exclude=/.locks")
+        // Reserved for the channel-store subtree this pass writes next.
+        .arg("--exclude=/.channel-stores");
     if let Some(p) = &prev {
         cmd.arg(format!("--link-dest={}", root.join(p).display()));
     }
@@ -147,21 +149,53 @@ fn snapshot_locked(
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
+    // The worker's per-channel stores ride the same snapshot, under a
+    // reserved subtree — one rotation covers the worker's whole durable
+    // surface, and restore can pick either side.
+    let channel_stores =
+        crate::paths::worker_channel_stores_dir(crate::paths::short_worker(worker));
+    let mut channel_out: Vec<u8> = Vec::new();
+    if channel_stores.is_dir() {
+        let mut cmd = std::process::Command::new("rsync");
+        cmd.arg("-a").arg("--delete").arg("--itemize-changes");
+        if let Some(p) = &prev {
+            let prev_sub = root.join(p).join(".channel-stores");
+            if prev_sub.is_dir() {
+                cmd.arg(format!("--link-dest={}", prev_sub.display()));
+            }
+        }
+        let out = cmd
+            .arg(format!("{}/", channel_stores.display()))
+            .arg(tmp.join(".channel-stores"))
+            .output()
+            .map_err(|e| format!("rsync: {e} (is rsync installed?)"))?;
+        if !out.status.success() {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(format!(
+                "rsync failed on channel stores: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        channel_out = out.stdout;
+    }
     // With --link-dest, unchanged files produce no itemize output — the lines
     // ARE the delta. Keep only real itemize records (update-type char, then
     // file-type char — e.g. ">f", "cd", "*deleting"), dropping rsync's info
     // messages ("created directory …") and directory-timestamp noise (".d").
+    let is_itemized = |l: &&str| {
+        let b = l.as_bytes();
+        l.starts_with("*deleting")
+            || (b.len() > 11
+                && matches!(b[0], b'<' | b'>' | b'c' | b'h' | b'.')
+                && matches!(b[1], b'f' | b'd' | b'L' | b'D' | b'S')
+                && !l.starts_with(".d"))
+    };
+    let channel_text = String::from_utf8_lossy(&channel_out).into_owned();
     let itemized: Vec<&str> = std::str::from_utf8(&out.stdout)
         .unwrap_or_default()
         .lines()
-        .filter(|l| {
-            let b = l.as_bytes();
-            l.starts_with("*deleting")
-                || (b.len() > 11
-                    && matches!(b[0], b'<' | b'>' | b'c' | b'h' | b'.')
-                    && matches!(b[1], b'f' | b'd' | b'L' | b'D' | b'S')
-                    && !l.starts_with(".d"))
-        })
+        .filter(is_itemized)
+        .chain(channel_text.lines().filter(is_itemized))
         .collect();
     if prev.is_some() && itemized.is_empty() {
         let _ = std::fs::remove_dir_all(&tmp);
@@ -187,10 +221,16 @@ fn prune(worker: &str, keep: usize) {
     }
 }
 
-/// Restore the store from a snapshot (the newest when `from` is None). The
-/// current state is snapshotted first — a restore is always undoable by
-/// another restore. Returns (restored-from, undo-snapshot-if-any).
-pub fn restore(worker: &str, from: Option<&str>) -> Result<(PathBuf, Option<PathBuf>), String> {
+/// Restore from a snapshot (the newest when `from` is None). The current
+/// state is snapshotted first — a restore is always undoable by another
+/// restore. Bare: the global store (plus every channel store the snapshot
+/// carries). `channel`: ONLY that conversation's channel store. Returns
+/// (restored-from, undo-snapshot-if-any).
+pub fn restore(
+    worker: &str,
+    from: Option<&str>,
+    channel: Option<&str>,
+) -> Result<(PathBuf, Option<PathBuf>), String> {
     let snaps = list_snapshots(worker);
     let pick = match from {
         Some(name) => snaps
@@ -216,10 +256,50 @@ pub fn restore(worker: &str, from: Option<&str>) -> Result<(PathBuf, Option<Path
     let _lock = store_lock(worker)?;
     let undo = snapshot_locked(worker, &store, None)?.map(|o| o.dir);
     let src = snapshots_dir(worker).join(&pick);
+    let rsync = |from: &Path, to: &Path| -> Result<(), String> {
+        let out = std::process::Command::new("rsync")
+            .arg("-a")
+            .arg("--delete")
+            .arg("--exclude=/.locks")
+            .arg(format!("{}/", from.display()))
+            .arg(to)
+            .output()
+            .map_err(|e| format!("rsync: {e} (is rsync installed?)"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "rsync failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        Ok(())
+    };
+    if let Some(channel) = channel {
+        let sub = src.join(".channel-stores").join(channel);
+        if !sub.is_dir() {
+            return Err(format!(
+                "snapshot {pick} has no channel store for \"{channel}\""
+            ));
+        }
+        let dest =
+            crate::paths::worker_channel_store_dir(crate::paths::short_worker(worker), channel);
+        std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+        rsync(&sub, &dest)?;
+        return Ok((sub, undo));
+    }
+    // Snapshots taken since the channel-store split carry the store at the
+    // top level with channel stores under .channel-stores; restore each to
+    // its home.
+    let channel_sub = src.join(".channel-stores");
+    if channel_sub.is_dir() {
+        let dest = crate::paths::worker_channel_stores_dir(crate::paths::short_worker(worker));
+        std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+        rsync(&channel_sub, &dest)?;
+    }
     let out = std::process::Command::new("rsync")
         .arg("-a")
         .arg("--delete")
         .arg("--exclude=/.locks")
+        .arg("--exclude=/.channel-stores")
         .arg(format!("{}/", src.display()))
         .arg(&store)
         .output()
@@ -293,7 +373,7 @@ mod tests {
         // auto-snapshotted, so the restore itself is undoable.
         let older = list_snapshots("dobby").pop().unwrap();
         std::fs::write(store.join("notes.md"), "wrecked-by-a-bad-run").unwrap();
-        let (from, undo) = restore("dobby", Some(&older)).unwrap();
+        let (from, undo) = restore("dobby", Some(&older), None).unwrap();
         assert!(from.ends_with(&older));
         assert!(undo.is_some(), "wrecked state was preserved for undo");
         assert_eq!(
@@ -310,5 +390,39 @@ mod tests {
         // keep=0 disables the pass entirely.
         std::fs::write(store.join("notes.md"), "v4").unwrap();
         assert!(snapshot("dobby", None, 0).unwrap().is_none());
+
+        // Channel stores ride the same rotation, under the reserved subtree
+        // — a channel-side change alone is a real snapshot, and a channel
+        // restore touches only that conversation's space.
+        let chan = crate::paths::worker_channel_store_dir("dobby", "manas");
+        std::fs::create_dir_all(&chan).unwrap();
+        std::fs::write(chan.join("context.md"), "room notes v1").unwrap();
+        let with_chan = snapshot("dobby", None, 5)
+            .unwrap()
+            .expect("channel-store change snapshots");
+        assert_eq!(
+            std::fs::read_to_string(
+                with_chan
+                    .dir
+                    .join(".channel-stores")
+                    .join("manas")
+                    .join("context.md")
+            )
+            .unwrap(),
+            "room notes v1"
+        );
+        std::fs::write(chan.join("context.md"), "wrecked").unwrap();
+        std::fs::write(store.join("notes.md"), "store-stays").unwrap();
+        let (from, _) = restore("dobby", None, Some("manas")).unwrap();
+        assert!(from.ends_with("manas"));
+        assert_eq!(
+            std::fs::read_to_string(chan.join("context.md")).unwrap(),
+            "room notes v1"
+        );
+        assert_eq!(
+            std::fs::read_to_string(store.join("notes.md")).unwrap(),
+            "store-stays",
+            "a channel restore leaves the global store alone"
+        );
     }
 }

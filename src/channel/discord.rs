@@ -723,24 +723,28 @@ async fn handle_message(
     if d["author"]["bot"].as_bool().unwrap_or(false) {
         return;
     }
-    let channel_id = d["channel_id"].as_str().unwrap_or("");
-    if channel_id.is_empty() {
+    // The surface is where the message physically arrived; the channel is
+    // the conversation it belongs to — identical until an operator links.
+    let surface_id = d["channel_id"].as_str().unwrap_or("");
+    if surface_id.is_empty() {
         return;
     }
+    let channel_id = crate::channel::links::logical_of(surface_id);
+    let channel_id = channel_id.as_str();
     // Attachment rule: an out-of-scope surface doesn't exist for this
     // listener — not persisted, not answered, no attachments fetched.
-    if out_of_scope(worker, credential, d["guild_id"].as_str(), channel_id) {
+    if out_of_scope(worker, credential, d["guild_id"].as_str(), surface_id) {
         return;
     }
     let is_dm = d["guild_id"].as_str().is_none();
     if is_dm {
-        if let Err(e) = set_channel_trust(channel_id, true) {
+        if let Err(e) = set_channel_trust(surface_id, true) {
             // DMs are always trusted (1:1, sought-out); a failure here isn't
             // user-facing, but it must not pass unnoticed.
-            eprintln!("discord: could not mark DM channel {channel_id} trusted: {e}");
+            eprintln!("discord: could not mark DM channel {surface_id} trusted: {e}");
         }
         write_channel_meta(
-            channel_id,
+            surface_id,
             &json!({
                 "platform": "discord",
                 "name": format!("DM with {}", d["author"]["username"].as_str().unwrap_or("?")),
@@ -795,10 +799,20 @@ async fn handle_message(
     } else {
         " [group chat; you were not directly addressed — reply only if useful]"
     };
-    let text = format!("{content}{hint}");
+    // In a linked channel the reply goes where the person spoke THIS time —
+    // the host names the surface per turn, so the worker experiences one
+    // conversation and just addresses each reply as directed. Singleton
+    // channels keep today's turn bytes exactly.
+    let routing = if channel_id != surface_id {
+        format!(" [arrived via Discord — reply with discord_send to channel id {surface_id}]")
+    } else {
+        String::new()
+    };
+    let text = format!("{content}{hint}{routing}");
     let context = crate::worker::memory::RunContext {
         provider: "discord".into(),
         channel_id: Some(channel_id.to_string()),
+        surface_id: Some(surface_id.to_string()),
         user_id: d["author"]["id"].as_str().map(String::from),
         message_id: d["id"].as_str().map(String::from),
         thread_ts: None, // Discord has no Slack-style thread ts
@@ -810,6 +824,7 @@ async fn handle_message(
     route_to_session(
         worker,
         channel_id,
+        surface_id,
         author.to_string(),
         text,
         context,
@@ -849,6 +864,7 @@ const SESSION_IDLE_SECS: u64 = 90;
 async fn route_to_session(
     worker: &str,
     channel_id: &str,
+    surface_id: &str,
     author_label: String,
     text: String,
     context: crate::worker::memory::RunContext,
@@ -856,8 +872,11 @@ async fn route_to_session(
     token: &str,
 ) {
     let start_context = context.clone();
-    // Key sessions by (worker, channel): two workers can share a channel, and a
-    // channel-only key would route one worker's traffic into the other's box.
+    // Key sessions by (worker, LOGICAL channel): two workers can share a
+    // channel, and a channel-only key would route one worker's traffic into
+    // the other's box. Linked same-provider surfaces land in one session.
+    // Typing indicators and failure notes go to the SURFACE the person is
+    // actually looking at.
     let key = session_key(worker, channel_id);
     let message = crate::run::boxed::SessionMessage {
         text,
@@ -880,7 +899,7 @@ async fn route_to_session(
             None => false,
         }
     };
-    spawn_typing(channel_id, token);
+    spawn_typing(surface_id, token);
     if delivered {
         return;
     }
@@ -889,7 +908,7 @@ async fn route_to_session(
     let _ = tx.try_send(message);
     sessions().lock().unwrap().insert(key.clone(), tx);
     let (w, run_id) = (worker.to_string(), crate::run::boxed::new_run_id());
-    let (channel_owned, token_owned) = (channel_id.to_string(), token.to_string());
+    let (channel_owned, token_owned) = (surface_id.to_string(), token.to_string());
     let session_map_key = key;
     tokio::spawn(async move {
         // Reduce the outcome to a Send-safe String before any await below.
@@ -1174,7 +1193,8 @@ async fn run_command(worker: &str, d: &Value, role: &str, caller: &str) -> Strin
         .unwrap_or("");
     let memory_context = crate::worker::memory::RunContext {
         provider: "discord".into(),
-        channel_id: Some(channel_id.to_string()).filter(|s| !s.is_empty()),
+        channel_id: Some(crate::channel::links::logical_of(channel_id)).filter(|s| !s.is_empty()),
+        surface_id: Some(channel_id.to_string()).filter(|s| !s.is_empty()),
         user_id: Some(caller_id.to_string()).filter(|s| !s.is_empty()),
         message_id: None,
         thread_ts: None,
@@ -1284,36 +1304,42 @@ fn mutate_settings(f: impl FnOnce(&mut HashMap<String, ChannelSettings>)) -> Res
 }
 
 /// Is this channel marked trusted? (DMs are marked trusted when first seen.)
+/// Settings key on the LOGICAL channel: a surface id resolves to its linked
+/// channel first, so linked surfaces share one designation.
 pub fn channel_trusted(channel_id: &str) -> bool {
+    let channel_id = crate::channel::links::logical_of(channel_id);
     load_settings()
-        .get(channel_id)
+        .get(&channel_id)
         .map(|s| s.trusted)
         .unwrap_or(false)
 }
 
 pub fn set_channel_trust(channel_id: &str, trusted: bool) -> Result<(), String> {
+    let channel_id = crate::channel::links::logical_of(channel_id);
     // Hot path: DMs re-assert trust on every message. Skip the locked write when
     // nothing changes (the read sees a whole file thanks to atomic writes).
-    if channel_trusted(channel_id) == trusted {
+    if channel_trusted(&channel_id) == trusted {
         return Ok(());
     }
     mutate_settings(|m| {
-        m.entry(channel_id.to_string()).or_default().trusted = trusted;
+        m.entry(channel_id).or_default().trusted = trusted;
     })
 }
 
 /// The channel's response mode: "all" (default) or "mention".
 pub fn channel_mode(channel_id: &str) -> String {
+    let channel_id = crate::channel::links::logical_of(channel_id);
     load_settings()
-        .get(channel_id)
+        .get(&channel_id)
         .map(|s| s.mode.clone())
         .unwrap_or_else(default_mode)
 }
 
 pub fn set_channel_mode(channel_id: &str, mode: &str) -> Result<(), String> {
+    let channel_id = crate::channel::links::logical_of(channel_id);
     let mode = mode.to_string();
     mutate_settings(|m| {
-        m.entry(channel_id.to_string()).or_default().mode = mode;
+        m.entry(channel_id).or_default().mode = mode;
     })
 }
 
@@ -1321,10 +1347,35 @@ pub fn channel_settings_all() -> HashMap<String, ChannelSettings> {
     load_settings()
 }
 
+/// Fold newly linked surfaces' settings entries into their logical
+/// channel's (channel link): member entries are removed — reads resolve to
+/// the channel from here on — the strictest wake mode survives, and the
+/// channel is trusted (v1 links 1:1 surfaces only, which are trusted by
+/// definition; docs/channels.md).
+pub fn absorb_settings(logical: &str, members: &[String]) -> Result<(), String> {
+    mutate_settings(|m| {
+        let mut mention = m.get(logical).map(|s| s.mode == "mention").unwrap_or(false);
+        for sid in members {
+            if let Some(s) = m.remove(sid) {
+                mention = mention || s.mode == "mention";
+            }
+        }
+        let entry = m.entry(logical.to_string()).or_default();
+        entry.trusted = true;
+        if mention {
+            entry.mode = "mention".into();
+        }
+    })
+}
+
 // ── channel store (history + uploads), under the read-only repo mount ─────────
 
+/// The LOGICAL channel's directory: conversation material (history, files,
+/// purpose) follows the conversation, so a linked surface's material lands
+/// in its channel's dir. Surface-keyed artifacts (meta, replay cursors) call
+/// `paths::channel_dir` directly and never resolve.
 fn channel_dir(channel_id: &str) -> PathBuf {
-    paths::channel_dir(channel_id)
+    paths::channel_dir(&crate::channel::links::logical_of(channel_id))
 }
 
 /// A channel's purpose file (channels/<id>/purpose.md) — the worker's role in

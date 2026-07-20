@@ -25,6 +25,7 @@ pub fn ls(worker: Option<&str>, limit: usize, json: bool) -> Result<(), BErr> {
                     "state": run.state, "started_at": run.started_at,
                     "ended_at": run.ended_at, "task_id": run.task_id,
                     "channel_id": run.channel_id,
+                    "surface_id": run.surface_id,
                     "error": run.record.as_ref().and_then(|r| r.error.clone()),
                 })
             })
@@ -78,6 +79,11 @@ pub fn show(id: &str) -> Result<(), BErr> {
     }
     if let Some(channel) = &run.channel_id {
         println!("channel   {channel}");
+    }
+    if let Some(surface) = &run.surface_id {
+        if Some(surface) != run.channel_id.as_ref() {
+            println!("surface   {surface}");
+        }
     }
     if let Some(user) = &run.user_id {
         println!("user      {user}");

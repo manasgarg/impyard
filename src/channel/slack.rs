@@ -399,16 +399,24 @@ async fn handle_message(
     if user_id.is_empty() || user_id == bot_user_id {
         return;
     }
-    let channel_id = event["channel"].as_str().unwrap_or("");
-    if channel_id.is_empty() {
+    // The surface is where the message physically arrived; the channel is
+    // the conversation it belongs to — identical until an operator links.
+    let surface_id = event["channel"].as_str().unwrap_or("");
+    if surface_id.is_empty() {
         return;
     }
+    let channel_id = crate::channel::links::logical_of(surface_id);
+    let channel_id = channel_id.as_str();
     let is_dm = event["channel_type"].as_str() == Some("im");
     if is_dm {
         // DMs are always trusted (1:1, sought-out).
-        if let Err(e) = set_channel_trust(channel_id, true) {
-            eprintln!("slack: could not mark DM channel {channel_id} trusted: {e}");
+        if let Err(e) = set_channel_trust(surface_id, true) {
+            eprintln!("slack: could not mark DM channel {surface_id} trusted: {e}");
         }
+        crate::channel::discord::write_channel_meta(
+            surface_id,
+            &json!({ "platform": "slack", "class": "dm" }),
+        );
     }
     let role = if is_dm {
         "trusted"
@@ -460,9 +468,18 @@ async fn handle_message(
     } else {
         " [group chat; you were not directly addressed — reply only if useful]"
     };
+    // In a linked channel the reply goes where the person spoke THIS time.
+    let routing = if channel_id != surface_id {
+        format!(
+            " [arrived via Slack — reply with slack_send to channel id {surface_id}, in mrkdwn]"
+        )
+    } else {
+        String::new()
+    };
     let context = crate::worker::memory::RunContext {
         provider: "slack".into(),
         channel_id: Some(channel_id.to_string()),
+        surface_id: Some(surface_id.to_string()),
         user_id: Some(user_id.to_string()),
         message_id: event["ts"].as_str().map(String::from),
         // Reply back into the thread the message came from, when it was in one.
@@ -475,8 +492,9 @@ async fn handle_message(
     route_to_session(
         worker,
         channel_id,
+        surface_id,
         user_id.to_string(),
-        format!("{text}{hint}"),
+        format!("{text}{hint}{routing}"),
         context,
         history,
         bot_token,
@@ -537,6 +555,7 @@ const SESSION_IDLE_SECS: u64 = 90;
 async fn route_to_session(
     worker: &str,
     channel_id: &str,
+    surface_id: &str,
     author_label: String,
     text: String,
     context: crate::worker::memory::RunContext,
@@ -544,7 +563,9 @@ async fn route_to_session(
     bot_token: &str,
 ) {
     let start_context = context.clone();
-    // Key by (worker, channel) so two workers sharing a channel don't collide.
+    // Key by (worker, LOGICAL channel) so two workers sharing a channel don't
+    // collide and linked same-provider surfaces land in one session; failure
+    // notes go to the SURFACE the person is actually looking at.
     let key = crate::channel::discord::session_key(worker, channel_id);
     let message = crate::run::boxed::SessionMessage {
         text,
@@ -574,7 +595,7 @@ async fn route_to_session(
     let _ = tx.try_send(message);
     sessions().lock().unwrap().insert(key.clone(), tx);
     let (w, run_id) = (worker.to_string(), crate::run::boxed::new_run_id());
-    let (channel_owned, token_owned) = (channel_id.to_string(), bot_token.to_string());
+    let (channel_owned, token_owned) = (surface_id.to_string(), bot_token.to_string());
     let session_map_key = key;
     let thread = start_context.thread_ts.clone();
     tokio::spawn(async move {

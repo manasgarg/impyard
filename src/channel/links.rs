@@ -122,12 +122,81 @@ pub fn link(name: &str, surface_ids: &[String]) -> Result<(), String> {
         }
     }
     let members = reg.channels.entry(name.to_string()).or_default();
-    for sid in surface_ids {
-        if !members.iter().any(|m| m == sid) {
-            members.push(sid.clone());
+    let fresh: Vec<String> = surface_ids
+        .iter()
+        .filter(|sid| !members.iter().any(|m| m == *sid))
+        .cloned()
+        .collect();
+    members.extend(fresh.iter().cloned());
+    save(&reg)?;
+    // One-time merge: each newly linked surface's conversation material
+    // (history, shared files, purpose) folds into the channel's dir, and its
+    // settings entry is absorbed. The surface's own dir keeps host
+    // bookkeeping (meta, replay cursors) plus a marker where its history
+    // was, so a re-link never double-merges.
+    for sid in &fresh {
+        merge_surface_material(name, sid);
+    }
+    crate::channel::discord::absorb_settings(name, &fresh)
+}
+
+/// Fold one surface's conversation material into the logical channel's dir.
+/// Interleaves history by `ts` (records carry the platform's own send
+/// time), moves shared files, and seeds the channel's purpose from the
+/// first member that has one. Best-effort by design: a partial merge loses
+/// no source data (originals are renamed, never deleted).
+fn merge_surface_material(name: &str, sid: &str) {
+    if sid == name {
+        return;
+    }
+    let src_dir = crate::paths::channel_dir(sid);
+    let dst_dir = crate::paths::channel_dir(name);
+    let _ = std::fs::create_dir_all(&dst_dir);
+
+    let src_msgs = src_dir.join("messages.jsonl");
+    let dst_msgs = dst_dir.join("messages.jsonl");
+    if src_msgs.is_file() {
+        let mut records: Vec<(String, String)> = Vec::new();
+        for path in [&dst_msgs, &src_msgs] {
+            for line in std::fs::read_to_string(path).unwrap_or_default().lines() {
+                let ts = serde_json::from_str::<serde_json::Value>(line)
+                    .ok()
+                    .and_then(|v| v.get("ts").and_then(|t| t.as_str()).map(String::from))
+                    .unwrap_or_default();
+                records.push((ts, line.to_string()));
+            }
+        }
+        // Stable by timestamp: RFC 3339 sorts lexicographically, and equal
+        // stamps keep their original relative order.
+        records.sort_by(|a, b| a.0.cmp(&b.0));
+        let body: String = records.into_iter().map(|(_, l)| l + "\n").collect();
+        if crate::statefile::write_atomic(&dst_msgs, body.as_bytes()).is_ok() {
+            let _ = std::fs::rename(&src_msgs, src_dir.join("messages.jsonl.linked"));
         }
     }
-    save(&reg)
+
+    let src_files = src_dir.join("files");
+    if src_files.is_dir() {
+        let dst_files = dst_dir.join("files");
+        let _ = std::fs::create_dir_all(&dst_files);
+        for entry in std::fs::read_dir(&src_files)
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let to = dst_files.join(entry.file_name());
+            if !to.exists() {
+                let _ = std::fs::rename(entry.path(), to);
+            }
+        }
+        let _ = std::fs::remove_dir(&src_files);
+    }
+
+    let src_purpose = src_dir.join("purpose.md");
+    let dst_purpose = dst_dir.join("purpose.md");
+    if src_purpose.is_file() && !dst_purpose.exists() {
+        let _ = std::fs::rename(&src_purpose, &dst_purpose);
+    }
 }
 
 /// Remove a surface from its linked channel. The channel (and its history
@@ -173,10 +242,44 @@ mod tests {
             "900",
             &serde_json::json!({ "platform": "discord", "class": "dm" }),
         );
+        // Pre-link history on both surfaces, out of order across them.
+        crate::channel::discord::persist_message(
+            "term-manas-dobby",
+            &serde_json::json!({ "ts": "2026-07-01T10:00:00Z", "content": "first" }),
+        );
+        crate::channel::discord::persist_message(
+            "900",
+            &serde_json::json!({ "ts": "2026-07-01T09:00:00Z", "content": "earlier" }),
+        );
         link("manas", &["term-manas-dobby".into(), "900".into()]).unwrap();
         assert_eq!(logical_of("900"), "manas");
         assert_eq!(logical_of("term-manas-dobby"), "manas");
         assert_eq!(surfaces_of("manas"), vec!["term-manas-dobby", "900"]);
+
+        // Histories interleaved by timestamp under the channel; originals
+        // are markers now, and post-link traffic on either surface lands in
+        // the channel's file. The channel is trusted (1:1 members only).
+        let merged =
+            std::fs::read_to_string(crate::paths::channel_dir("manas").join("messages.jsonl"))
+                .unwrap();
+        let posts: Vec<&str> = merged.lines().collect();
+        assert!(
+            posts[0].contains("earlier") && posts[1].contains("first"),
+            "{merged}"
+        );
+        assert!(crate::paths::channel_dir("900")
+            .join("messages.jsonl.linked")
+            .is_file());
+        crate::channel::discord::persist_message(
+            "900",
+            &serde_json::json!({ "ts": "2026-07-01T11:00:00Z", "content": "after" }),
+        );
+        let merged =
+            std::fs::read_to_string(crate::paths::channel_dir("manas").join("messages.jsonl"))
+                .unwrap();
+        assert_eq!(merged.lines().count(), 3);
+        assert!(crate::channel::discord::channel_trusted("900"));
+        assert!(crate::channel::discord::channel_trusted("manas"));
 
         // A group-shaped surface is refused; so is double-linking.
         crate::channel::discord::write_channel_meta(

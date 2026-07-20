@@ -164,6 +164,39 @@ connection and role-checked per command:
 Slack has no slash commands yet — administer via the CLI, or
 conversationally in trusted channels.
 
+## Linked channels: one conversation, several surfaces
+
+A **surface** is a platform-native place — a Discord DM, a Slack DM, your
+terminal. A **channel** is the conversation roster keeps for it: history,
+purpose, trust, settings, and the worker's per-conversation store. Every
+surface is its own channel until you link:
+
+```bash
+roster channel link manas term-manas-dobby 1451951375079
+roster channel unlink 1451951375079
+```
+
+Linking is the operator's act, from the authenticated CLI — it merges
+**conversation, never authority**. From then on the members are one
+channel: histories interleave (by the platform's own send times) into one
+record, purpose and trust designations are shared, and the worker's
+channel store is one space. A message arriving on any member surface joins
+the same conversation, and the reply goes to whichever surface the person
+spoke from this time — each turn names its reply surface, so the worker
+experiences one thread and just addresses each answer as directed.
+
+v1 links **1:1 surfaces only** — DM-class surfaces and terminal channels;
+group rooms are refused (merging audiences leaks by construction). Since
+every 1:1 surface is trusted by definition, a linked channel is trusted —
+uniform trust is a theorem here, not a rule.
+
+Two honest edges: warm sessions are shared across linked surfaces of one
+provider, while a surface on a *different* provider starts its own session
+— which still wakes with the merged history, so walking from Slack to your
+terminal carries the conversation even though the live box is fresh. And
+`unlink` never un-shares: the channel and its material stay with the
+remaining members; the departing surface starts over as a fresh singleton.
+
 ## The terminal
 
 `roster talk <worker>` makes your own terminal a channel with the same
@@ -178,9 +211,10 @@ repo work goes through `file_task`.
 
 ## History on disk
 
-The listener records everything under `data/channels/<id>/`: the full
-message history (`messages.jsonl`), downloaded attachments (`files/`), and
-the purpose file. A run in that channel gets recent messages in context and
+The listener records everything under `data/channels/<id>/` (the logical
+channel's id): the full message history (`messages.jsonl`), downloaded
+attachments (`files/`), and the purpose file. Surface bookkeeping — meta,
+replay cursors — stays under the surface's own id. A run in that channel gets recent messages in context and
 the channel directory mounted read-only for anything older — and only *its*
 channel; no run can read another channel's history.
 

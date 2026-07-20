@@ -220,6 +220,10 @@ fn task_memory_context(task: &tms::Task) -> crate::worker::memory::RunContext {
         channel_id: d
             .get("channel_id")
             .and_then(|v| v.as_str())
+            .map(crate::channel::links::logical_of),
+        surface_id: d
+            .get("channel_id")
+            .and_then(|v| v.as_str())
             .map(String::from),
         user_id: d
             .get("author_id")

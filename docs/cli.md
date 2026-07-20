@@ -37,6 +37,7 @@ server runs       ls [--worker W] [--limit N] [--json]
                   | show <run> | context <run> [--all] | recall <run>
 
 channel           ls [--json] | show <id> | trust <id> | untrust <id>
+                  | link <name> <surface>.. | unlink <surface>
                   | set <id> <key> <value>
                     keys: mode, memory, memory-inferred, memory-kinds,
                           memory-retention, memory-notes, memory-chars

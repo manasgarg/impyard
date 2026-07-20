@@ -898,9 +898,12 @@ async fn provision_box(
             format!("{}:{}:ro", checkout.bare.display(), checkout.origin_mount()),
         ]);
     }
-    // The active channel — the ONLY per-channel mount, and the only thing
+    // The active channel — the ONLY per-channel mounts, and the only thing
     // that varies between two runs of one worker beyond task input. Other
-    // channels' histories never mount.
+    // channels' histories never mount. The channel STORE is the (worker ×
+    // channel) durable space, rw exactly where channel material mounts —
+    // conversation material follows the conversation, so a run without the
+    // channel (a clean task) gets neither.
     if let Some(channel) = run_context.channel_id.as_deref() {
         let channel_dir = crate::paths::channel_dir(channel);
         if channel_dir.is_dir() {
@@ -909,6 +912,12 @@ async fn provision_box(
                 format!("{}:{CHANNEL_MOUNT}:ro", channel_dir.display()),
             ]);
         }
+        let store = crate::paths::worker_channel_store_dir(short, channel);
+        std::fs::create_dir_all(&store)?;
+        args.extend([
+            "-v".into(),
+            format!("{}:{CHANNEL_MOUNT}/store", store.display()),
+        ]);
     }
     // The worker's task partition as a live read view inside self/
     // (docs/work.md): the host rewrites it in place on every mutation;

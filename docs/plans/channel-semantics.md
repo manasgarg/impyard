@@ -1,6 +1,13 @@
 # Plan: channel semantics — surfaces, logical channels, and the store split
 
-Status: design settled (2026-07-20) — implementation not started
+Status: implemented (2026-07-20) — all five stages landed. Two honest
+deltas from the design: warm sessions are shared across linked surfaces
+per provider (a cross-provider surface starts its own session, waking with
+the merged history — a live shared box across providers would need
+RunSurface unification); and reply routing is the per-turn directive
+form (decision 8's chosen shape), with no unified send tool. Deferred as
+planned: identity linking, group-channel linking, moving memory into
+channel stores, new channel providers.
 Scope: split the platform-native *surface* from the logical *channel*; add
 class-based scoping (`public` / `private` / `dm`) to grant edges; give each
 (worker × channel) pair its own durable store next to the worker's global

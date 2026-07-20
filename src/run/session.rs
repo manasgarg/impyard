@@ -288,9 +288,13 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
         eprintln!("talk: could not mark {channel_id} trusted: {e}");
     }
 
+    // The terminal is a surface; linked, its conversation is the logical
+    // channel's — same history, same purpose, same store.
+    let logical = crate::channel::links::logical_of(&channel_id);
     let context = crate::worker::memory::RunContext {
         provider: "term".into(),
-        channel_id: Some(channel_id.clone()),
+        channel_id: Some(logical.clone()),
+        surface_id: Some(channel_id.clone()),
         user_id: Some(user.clone()),
         message_id: None,
         thread_ts: None,
@@ -301,9 +305,16 @@ pub async fn talk(worker: &str, idle: u64) -> Result<(), BErr> {
 
     let (reply_tx, reply_rx) = tokio::sync::mpsc::channel::<String>(32);
 
-    eprintln!(
-        "talking to {worker} — terminal channel {channel_id} (trusted); quiet sessions wind down and wake on your next message; /help for commands, Ctrl-D leaves"
-    );
+    if logical != channel_id {
+        let members = crate::channel::links::surfaces_of(&logical).join(", ");
+        eprintln!(
+            "talking to {worker} — channel {logical} (trusted; linked surfaces: {members}); quiet sessions wind down and wake on your next message; /help for commands, Ctrl-D leaves"
+        );
+    } else {
+        eprintln!(
+            "talking to {worker} — terminal channel {channel_id} (trusted); quiet sessions wind down and wake on your next message; /help for commands, Ctrl-D leaves"
+        );
+    }
 
     // Task runs deliver results to this channel while nobody is watching
     // (term_send). Surface whatever arrived since the terminal last displayed

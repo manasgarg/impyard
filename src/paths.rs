@@ -156,6 +156,18 @@ pub fn worker_store_snapshots_dir(worker: &str) -> PathBuf {
     worker_data_dir(worker).join("store-snapshots")
 }
 
+/// The worker's per-channel durable spaces, keyed (worker × logical
+/// channel): conversation-scoped material, mounted rw at
+/// `$HOME/channel/store` in runs serving that channel. Worker-keyed on
+/// disk — two workers serving one channel never share a filesystem.
+pub fn worker_channel_stores_dir(worker: &str) -> PathBuf {
+    worker_data_dir(worker).join("channel-stores")
+}
+
+pub fn worker_channel_store_dir(worker: &str, channel_id: &str) -> PathBuf {
+    worker_channel_stores_dir(worker).join(channel_id)
+}
+
 pub fn worker_knowledge_dir(worker: &str) -> PathBuf {
     worker_data_dir(worker).join("knowledge")
 }

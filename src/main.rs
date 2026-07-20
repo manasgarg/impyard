@@ -208,6 +208,21 @@ enum ChannelCmd {
         /// The new value (omit to list keys and values)
         value: Option<String>,
     },
+    /// Link surfaces into one conversation: shared history, purpose, trust,
+    /// store. v1 links 1:1 surfaces only (DMs, your terminal)
+    Link {
+        /// A name for the linked channel (or an existing linked channel to extend)
+        name: String,
+        /// Surface ids to link (see: roster channel ls)
+        #[arg(required = true)]
+        surfaces: Vec<String>,
+    },
+    /// Remove a surface from its linked channel — the channel and its
+    /// material stay with the remaining members; nothing is un-shared
+    Unlink {
+        /// The surface id to unlink
+        surface_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -379,6 +394,9 @@ enum WorkerCmd {
         /// Snapshot name (see --list); omit for the newest
         #[arg(long)]
         from: Option<String>,
+        /// Restore only this conversation's channel store
+        #[arg(long)]
+        channel: Option<String>,
         /// List available snapshots and exit
         #[arg(long)]
         list: bool,
@@ -653,9 +671,12 @@ async fn main() {
                 Some(TaskCmd::Requeue { id }) => cli::task::requeue(&id),
             },
             Some(WorkerCmd::Knowledge { name }) => cli::knowledge::run(&name),
-            Some(WorkerCmd::Restore { name, from, list }) => {
-                cli::worker::restore(&name, from.as_deref(), list)
-            }
+            Some(WorkerCmd::Restore {
+                name,
+                from,
+                channel,
+                list,
+            }) => cli::worker::restore(&name, from.as_deref(), channel.as_deref(), list),
         },
     };
 
@@ -685,6 +706,8 @@ fn run_channel_cmd(cmd: Option<ChannelCmd>) -> Result<(), Box<dyn std::error::Er
             (Some(key), Some(value)) => cli::channel::set(&channel_id, &key, &value),
             _ => cli::channel::set_help(&channel_id),
         },
+        Some(ChannelCmd::Link { name, surfaces }) => cli::channel::link(&name, &surfaces),
+        Some(ChannelCmd::Unlink { surface_id }) => cli::channel::unlink(&surface_id),
     }
 }
 

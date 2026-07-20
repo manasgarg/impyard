@@ -72,6 +72,10 @@ pub struct RunSummary {
     pub ended_at: Option<String>,
     pub task_id: Option<String>,
     pub channel_id: Option<String>,
+    /// The platform-native surface the run's trigger arrived on, when the
+    /// context recorded one — provenance stays precise under linked
+    /// channels (records from before the split have none).
+    pub surface_id: Option<String>,
     pub user_id: Option<String>,
     pub run_dir: PathBuf,
     pub record: Option<RunRecord>,
@@ -258,10 +262,16 @@ fn summarize(
 ) -> Option<RunSummary> {
     let id = path.file_name()?.to_string_lossy().to_string();
     let record = load(&id);
-    let context = read_json(path.join("memory-context.json"));
+    let context = read_json(path.join("run-context.json"))
+        .or_else(|| read_json(path.join("memory-context.json")));
     let channel_id = context
         .as_ref()
         .and_then(|v| v.get("channel_id"))
+        .and_then(Value::as_str)
+        .map(String::from);
+    let surface_id = context
+        .as_ref()
+        .and_then(|v| v.get("surface_id"))
         .and_then(Value::as_str)
         .map(String::from);
     let user_id = context
@@ -323,6 +333,7 @@ fn summarize(
         ended_at,
         task_id,
         channel_id,
+        surface_id,
         user_id,
         run_dir: path.to_path_buf(),
         record,
