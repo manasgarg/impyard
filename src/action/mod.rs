@@ -876,14 +876,17 @@ fn persist_worker_message(channel: &str, worker: &str, text: &str) {
 /// logged, since the notice is itself a courtesy and must never wedge dispatch.
 pub async fn deliver_notice(provider: &str, channel: &str, worker: &str, text: &str) {
     let result = match provider {
-        "discord" => match crate::credential::vault::get_credential("discord")
-            .and_then(|c| c.get("token").and_then(|v| v.as_str()).map(String::from))
-        {
-            Some(token) => crate::channel::discord::post_chunked(&token, channel, text)
-                .await
-                .map(|_| ()),
-            None => Err("no discord credential".into()),
-        },
+        "discord" => {
+            let name = channel_credential_name(worker, "discord");
+            match crate::credential::vault::get_credential(&name)
+                .and_then(|c| c.get("token").and_then(|v| v.as_str()).map(String::from))
+            {
+                Some(token) => crate::channel::discord::post_chunked(&token, channel, text)
+                    .await
+                    .map(|_| ()),
+                None => Err(format!("no \"{name}\" credential")),
+            }
+        }
         "slack" => {
             let name = channel_credential_name(worker, "slack");
             match crate::credential::vault::get_credential(&name).and_then(|c| {
@@ -916,8 +919,9 @@ async fn exec_discord(worker: &str, payload: &Value) -> Result<Value, String> {
         .and_then(|v| v.as_str())
         .filter(|s| !s.trim().is_empty())
         .ok_or("discord-send needs non-empty \"text\"")?;
-    let cred = crate::credential::vault::get_credential("discord")
-        .ok_or("no discord credential — run: roster connection add discord")?;
+    let name = channel_credential_name(worker, "discord");
+    let cred = crate::credential::vault::get_credential(&name)
+        .ok_or_else(|| format!("no \"{name}\" credential — run: roster connection add discord"))?;
     let token = cred
         .get("token")
         .and_then(|v| v.as_str())
