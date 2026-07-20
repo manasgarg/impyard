@@ -15,10 +15,11 @@ pub struct KnowledgePolicy {
     /// human gate (confirm_bulk_delete). History makes deletion recoverable;
     /// a quiet bulk wipe still deserves a speed bump.
     pub max_deletions_ungated: usize,
-    /// The memory/knowledge boundary (docs/repos.md):
-    /// "clean-room" — only untainted runs get a writable knowledge clone
-    /// (tainted runs read-only, clean runs recall-free); "any-run" — legacy
-    /// behavior, participant scanning only.
+    /// The default write contract for gated repos (docs/repos.md):
+    /// "clean-room" — only runs that carried no interaction content get a
+    /// writable clone; "any-run" — participant scanning only. A host-repo
+    /// connection file may declare its own `write_from`, which beats this
+    /// default for that repo.
     pub write_from: String,
 }
 

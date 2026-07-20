@@ -18,7 +18,8 @@ auto-provisioned rw host-dir grant — which is why it appears in
 briefing teaches it to consult its memory when someone rings familiar,
 record what deserves keeping, and carry person-facts with discretion —
 what someone says in a private conversation isn't material for another
-room. The store mounts read-write in tainted and clean runs alike; unlike
+room. The store mounts read-write in every run, whether or not
+conversation content is present; unlike
 [gated repos](repos.md), cross-channel discretion here is the worker's
 conduct, not a storage boundary.
 

@@ -740,7 +740,7 @@ async fn provision_box(
     std::fs::create_dir_all(&workspace)?;
     std::fs::create_dir_all(&session)?;
     let store = crate::worker::store::provision(worker)?;
-    let storage = crate::worker::knowledge::provision(worker, run_id, run_context.tainted())?;
+    let storage = crate::worker::knowledge::provision(worker, run_id, run_context)?;
 
     let has_auth = prepare_pihome(&pihome, &home)?;
     if !has_auth && std::env::var("ANTHROPIC_API_KEY").is_err() {

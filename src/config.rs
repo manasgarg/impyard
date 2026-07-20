@@ -116,7 +116,15 @@ pub enum HostMountKind {
     /// `kind = "host-repo"` — a git repository, `write = "ro"` (default) or
     /// `"gated"`: the run works on a branch and lands it through the
     /// validated `repo_push` action; the host stays sole writer of `branch`.
-    Repo { gated: bool, branch: String },
+    /// A gated repo may declare its own write contract:
+    /// `write_from = "clean-room"` (only runs that carried no interaction
+    /// content get a writable clone) or `"any-run"` (participant scanning
+    /// only). None = the org `[knowledge] write_from` default.
+    Repo {
+        gated: bool,
+        branch: String,
+        write_from: Option<String>,
+    },
 }
 
 impl HostMount {
@@ -724,9 +732,13 @@ fn compile_connection(
     } else {
         let shared = match v.get("restrict") {
             Some(r) => match r.as_table() {
-                Some(table) => {
-                    parse_edge_scope(table, &format!("{ctx}: restrict"), &provider, &dims, &mut errors)
-                }
+                Some(table) => parse_edge_scope(
+                    table,
+                    &format!("{ctx}: restrict"),
+                    &provider,
+                    &dims,
+                    &mut errors,
+                ),
                 None => {
                     errors.push(format!(
                         "{ctx}: [restrict] must be a table of <dimension> = [\"id\", ..]"
@@ -939,9 +951,7 @@ fn parse_edge_scope(
             })
             .unwrap_or_default();
         if ids.is_empty() {
-            errors.push(format!(
-                "{ctx}.{dim} needs a non-empty list of id strings"
-            ));
+            errors.push(format!("{ctx}.{dim} needs a non-empty list of id strings"));
             continue;
         }
         out.insert(dim.clone(), ids);
@@ -1075,7 +1085,9 @@ fn compile_host_mount(
                     HostMountKind::Dir { rw: true }
                 }
                 other => {
-                    errors.push(format!("{ctx}: mode must be \"ro\" or \"rw\", not \"{other}\""));
+                    errors.push(format!(
+                        "{ctx}: mode must be \"ro\" or \"rw\", not \"{other}\""
+                    ));
                     HostMountKind::Dir { rw: false }
                 }
             }
@@ -1112,7 +1124,30 @@ fn compile_host_mount(
                 .and_then(|x| x.as_str())
                 .unwrap_or("main")
                 .to_string();
-            HostMountKind::Repo { gated, branch }
+            // The clean-room contract is per connection: this repo's own
+            // word beats the org [knowledge] default. Meaningless on an ro
+            // repo — reject rather than let dead config imply protection.
+            let write_from = match v.get("write_from").and_then(|x| x.as_str()) {
+                None => None,
+                Some(_) if !gated => {
+                    errors.push(format!(
+                        "{ctx}: write_from applies to gated repos only (write = \"gated\")"
+                    ));
+                    None
+                }
+                Some(w @ ("clean-room" | "any-run")) => Some(w.to_string()),
+                Some(other) => {
+                    errors.push(format!(
+                        "{ctx}: write_from must be \"clean-room\" or \"any-run\", not \"{other}\""
+                    ));
+                    None
+                }
+            };
+            HostMountKind::Repo {
+                gated,
+                branch,
+                write_from,
+            }
         }
         _ => unreachable!("caller routes only host kinds here"),
     };
@@ -1327,7 +1362,6 @@ fn memory_policy(
     serde_json::from_value(merged).map_err(|e| format!("memory policy is invalid: {e}").into())
 }
 
-
 fn storage_policy(
     value: &toml::Value,
     base: Option<&StoragePolicy>,
@@ -1428,8 +1462,16 @@ mod tests {
         "#,
         );
         let workers = vec!["dobby".to_string(), "kdemo".to_string()];
-        let (c, rules, exposes, warning) =
-            compile_connection("github", &v, &workers, |_| true, |_| true, |_| None, |_| Vec::new()).unwrap();
+        let (c, rules, exposes, warning) = compile_connection(
+            "github",
+            &v,
+            &workers,
+            |_| true,
+            |_| true,
+            |_| None,
+            |_| Vec::new(),
+        )
+        .unwrap();
         assert!(c.enabled);
         assert_eq!(c.methods, vec!["*"]); // the default: full access
         assert_eq!(rules.len(), 2);
@@ -1458,8 +1500,16 @@ mod tests {
             inject_value = "Bearer {key}"
         "#,
         );
-        let (_, rules, _, _) =
-            compile_connection("acme", &v, &[], |_| false, |_| true, |_| None, |_| Vec::new()).unwrap();
+        let (_, rules, _, _) = compile_connection(
+            "acme",
+            &v,
+            &[],
+            |_| false,
+            |_| true,
+            |_| None,
+            |_| Vec::new(),
+        )
+        .unwrap();
         assert_eq!(rules[0]["inject"]["provider"], "acme");
         assert_eq!(rules[0]["inject"]["headers"][0]["value"], "Bearer {key}");
     }
@@ -1529,10 +1579,7 @@ mod tests {
         assert!(!c.allows_surface("kdemo", None, "111"));
         // allow 111, allow 222, deny unscoped channels, deny guilds, broad allow
         assert_eq!(rules.len(), 5);
-        assert_eq!(
-            rules[0]["match"]["pathPrefix"],
-            "/api/v10/channels/111"
-        );
+        assert_eq!(rules[0]["match"]["pathPrefix"], "/api/v10/channels/111");
         assert_eq!(rules[2]["verdict"], "deny");
         assert_eq!(rules[4]["name"], "connection:discord");
         assert!(rules[4]["match"]["pathPrefix"].is_null());
@@ -1601,9 +1648,9 @@ mod tests {
         assert!(c.allows_surface("kdemo", None, "111"));
         assert!(!c.allows_surface("dobby", None, "111"));
         // Rules and exposures land per edge, in the worker's scope.
-        assert!(rules
-            .iter()
-            .any(|r| r["scope"] == "org/dobby" && r["match"]["pathPrefix"] == "/api/v10/guilds/999"));
+        assert!(rules.iter().any(
+            |r| r["scope"] == "org/dobby" && r["match"]["pathPrefix"] == "/api/v10/guilds/999"
+        ));
         assert!(rules
             .iter()
             .any(|r| r["scope"] == "org/kdemo"
@@ -1673,7 +1720,9 @@ mod tests {
         );
         let errors =
             compile_connection("discord", &v, &[], |_| true, |_| true, |_| None, dims).unwrap_err();
-        assert!(errors.iter().any(|e| e.contains("no such worker \"ghost\"")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("no such worker \"ghost\"")));
     }
 
     #[test]
@@ -1752,8 +1801,38 @@ mod tests {
         let (m, _) = compile_host_mount("proj", "host-repo", &v, &[]).unwrap();
         assert_eq!(
             m.kind,
-            HostMountKind::Repo { gated: true, branch: "main".into() }
+            HostMountKind::Repo {
+                gated: true,
+                branch: "main".into(),
+                write_from: None
+            }
         );
+
+        // A gated repo declares its own write contract; nonsense and
+        // dead-config placements are loud errors.
+        let mut v2 = v.clone();
+        let set = |v: &mut toml::Value, key: &str, val: &str| {
+            v.as_table_mut()
+                .unwrap()
+                .insert(key.into(), toml::Value::String(val.into()));
+        };
+        set(&mut v2, "write_from", "any-run");
+        let (m, _) = compile_host_mount("proj", "host-repo", &v2, &[]).unwrap();
+        assert_eq!(
+            m.kind,
+            HostMountKind::Repo {
+                gated: true,
+                branch: "main".into(),
+                write_from: Some("any-run".into())
+            }
+        );
+        set(&mut v2, "write_from", "sometimes");
+        let errors = compile_host_mount("proj", "host-repo", &v2, &[]).unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("write_from must be")));
+        set(&mut v2, "write", "ro");
+        set(&mut v2, "write_from", "clean-room");
+        let errors = compile_host_mount("proj", "host-repo", &v2, &[]).unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("gated repos only")));
     }
 
     #[test]
@@ -1768,8 +1847,9 @@ mod tests {
             dir.path().display()
         ));
         let errors = compile_host_mount("Bad Name", "host-dir", &v, &[]).unwrap_err();
-        assert!(errors.iter().any(|e| e.contains("path-safe")
-            || e.contains("lowercase")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("path-safe") || e.contains("lowercase")));
     }
 
     #[test]
@@ -1782,8 +1862,16 @@ mod tests {
             env = "GH_TOKEN"
         "#,
         );
-        let (c, rules, exposes, warning) =
-            compile_connection("github", &v, &[], |_| true, |_| false, |_| None, |_| Vec::new()).unwrap();
+        let (c, rules, exposes, warning) = compile_connection(
+            "github",
+            &v,
+            &[],
+            |_| true,
+            |_| false,
+            |_| None,
+            |_| Vec::new(),
+        )
+        .unwrap();
         assert!(!c.enabled);
         assert!(rules.is_empty() && exposes.is_empty());
         assert!(warning.unwrap().contains("disabled"));

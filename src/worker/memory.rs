@@ -1,10 +1,12 @@
 //! Run provenance. Every run records WHO was in the room (provider, channel,
-//! user, role) — the input to the person-space boundary: tainted runs get
-//! gated repos read-only, and the participant scan (worker/boundary.rs) keys
-//! off these identifiers. Interaction memory itself lives in the worker's
-//! store (`store/memory/`, docs/store.md), owned and organized by the worker;
-//! the host's only machinery is recall — a bounded, advisory window into
-//! that file compiled into each run's input ([memory] in org.toml).
+//! user, role) — the host's faithful account of what entered the run. The
+//! record is core; contracts over it belong to their consumers: the host-repo
+//! path (worker/knowledge.rs) derives clean-room eligibility from it, and the
+//! participant scan (worker/boundary.rs) keys off these identifiers.
+//! Interaction memory itself lives in the worker's store (`store/memory/`,
+//! docs/store.md), owned and organized by the worker; the host's only
+//! machinery is recall — a bounded, advisory window into that file compiled
+//! into each run's input ([memory] in org.toml).
 
 use crate::paths;
 use serde::{Deserialize, Serialize};
@@ -93,12 +95,19 @@ fn active_notes(text: &str) -> Vec<Value> {
             v.get("op").and_then(Value::as_str) != Some("forget")
                 && v.get("forgotten").and_then(Value::as_bool) != Some(true)
                 && v.get("disabled").and_then(Value::as_bool) != Some(true)
-                && v.get("note").and_then(Value::as_str).is_some_and(|s| !s.is_empty())
+                && v.get("note")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.is_empty())
         })
         .collect();
     out.sort_by(|a, b| {
         let pinned = |v: &Value| v.get("pinned").and_then(Value::as_bool) == Some(true);
-        let ts = |v: &Value| v.get("ts").and_then(Value::as_str).unwrap_or("").to_string();
+        let ts = |v: &Value| {
+            v.get("ts")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        };
         pinned(b).cmp(&pinned(a)).then(ts(b).cmp(&ts(a)))
     });
     out
@@ -118,23 +127,26 @@ pub struct RunContext {
     pub role: String,
     pub is_dm: bool,
     /// The run's prompt embeds inbound third-party content (a relay task) —
-    /// person-tainted even without channel/user identifiers.
+    /// interaction content even without channel/user identifiers.
     pub inbound: bool,
 }
 
 impl RunContext {
-    /// Did interaction content or context enter this run? Tainted runs get
-    /// gated repos read-only (docs/repos.md). One predicate, shared by
-    /// provisioning and the push gate.
-    pub fn tainted(&self) -> bool {
+    /// Did interaction content or context enter this run? A provenance fact,
+    /// not a judgment — what it *means* belongs to the consumers: the
+    /// host-repo path derives clean-room eligibility from it (docs/repos.md),
+    /// the participant scan decides whether to engage. One predicate, shared
+    /// by provisioning and the push gate.
+    pub fn carries_interaction(&self) -> bool {
         self.channel_id.is_some() || self.user_id.is_some() || self.inbound
     }
 
-    /// A deliberately-tainted context for when a run's real context can't be
-    /// read. The participant scan then runs (fail closed) instead of being
-    /// silently skipped, so an unreadable context file cannot disable the
-    /// person-space boundary. `inbound` is the only field `tainted()` reads.
-    pub fn tainted_unknown() -> Self {
+    /// The fail-closed context for when a run's real record can't be read:
+    /// it claims interaction content, so the participant scan still runs and
+    /// clean-room eligibility is denied, instead of an unreadable file
+    /// silently disabling the boundary. `inbound` is the only field
+    /// `carries_interaction()` reads.
+    pub fn assume_interaction() -> Self {
         RunContext {
             inbound: true,
             ..Default::default()
@@ -184,19 +196,19 @@ pub fn load_run_context(run_id: &str) -> RunContext {
     };
     match crate::statefile::read_if_present(&path) {
         Ok(Some(s)) => serde_json::from_str(&s).unwrap_or_else(|e| {
-            eprintln!("run context for {run_id} is corrupt ({e}); treating run as tainted");
-            RunContext::tainted_unknown()
+            eprintln!("run context for {run_id} is corrupt ({e}); failing closed as if it carried interaction content");
+            RunContext::assume_interaction()
         }),
         // A dispatched run always writes its context; a missing or unreadable
         // one means that write was lost. Fail closed so the participant scan
         // still runs, rather than silently disabling the boundary.
         Ok(None) => {
-            eprintln!("no run context for {run_id}; treating run as tainted");
-            RunContext::tainted_unknown()
+            eprintln!("no run context for {run_id}; failing closed as if it carried interaction content");
+            RunContext::assume_interaction()
         }
         Err(e) => {
-            eprintln!("could not read run context for {run_id} ({e}); treating run as tainted");
-            RunContext::tainted_unknown()
+            eprintln!("could not read run context for {run_id} ({e}); failing closed as if it carried interaction content");
+            RunContext::assume_interaction()
         }
     }
 }
@@ -206,7 +218,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn run_context_roundtrips_and_fails_tainted() {
+    fn run_context_roundtrips_and_fails_closed() {
         let _guard = crate::statefile::TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -222,12 +234,12 @@ mod tests {
         };
         save_run_context("r1", &ctx).unwrap();
         let loaded = load_run_context("r1");
-        assert!(loaded.tainted());
+        assert!(loaded.carries_interaction());
         assert_eq!(loaded.channel_id.as_deref(), Some("c1"));
 
-        // Missing context fails closed: tainted, not clean.
-        assert!(load_run_context("r-missing").tainted());
-        // The CLI/host-op path (no run id) is legitimately clean.
-        assert!(!load_run_context("").tainted());
+        // A missing context fails closed: it claims interaction content.
+        assert!(load_run_context("r-missing").carries_interaction());
+        // The CLI/host-op path (no run id) legitimately carries none.
+        assert!(!load_run_context("").carries_interaction());
     }
 }

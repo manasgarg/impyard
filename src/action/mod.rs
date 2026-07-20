@@ -563,11 +563,12 @@ fn exec_knowledge_push(worker: &str, run_id: &str, payload: &Value) -> Result<Va
 /// Deliver a note from the worker to its lead: a Discord DM when a bot token +
 /// lead id are configured, else the local inbox. The bot token stays in the
 /// vault; the box never holds it.
-/// `file_task` — the bridge across the memory/knowledge boundary: a tainted
-/// run queues durable work instead of writing records. The filed task is
-/// worker-only by construction (context: null — no channel, no participants),
-/// so it runs clean with a writable knowledge mount. The prompt is the entire
-/// crossing, and the participant scan polices it (docs/repos.md).
+/// `file_task` — the bridge across the memory/knowledge boundary: a run that
+/// carries interaction content queues durable work instead of writing
+/// records. The filed task is worker-only by construction (context: null —
+/// no channel, no participants), so it runs clean-room eligible with a
+/// writable knowledge mount. The prompt is the entire crossing, and the
+/// participant scan polices it (docs/repos.md).
 fn exec_file_task(worker: &str, payload: &Value, run_id: &str) -> Result<Value, String> {
     if run_id.is_empty() {
         return Err("file-task needs a trusted run context".into());

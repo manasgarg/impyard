@@ -105,53 +105,67 @@ information-flow property, enforced by provisioning:
 **A gated repo may only be pushed by runs that never contained
 person-data.**
 
-Every run is either **tainted** — it carries live interaction content:
-channel sessions, relay tasks, continuations with channel context — or
-**clean**: trigger-fired, admin-filed, self-filed, or ad-hoc, with a
-prompt and no participants.
+This is the **clean-room rule**, and it is this connection kind's own
+write contract — a predicate the host-repo path evaluates over the run
+provenance roster records for every run (which provider, channel, and
+user it served; whether interaction content entered it). Roster's job is
+to keep that record true; what it means for repo access is decided here.
+
+A run either **carried interaction content** — channel sessions, relay
+tasks, continuations with channel context — or it didn't:
+trigger-fired, admin-filed, self-filed, or ad-hoc, with a prompt and no
+participants.
 
 | Run | Gated-repo clones |
 |---|---|
-| tainted | read-only, push refused |
-| clean | writable, push granted |
+| carried interaction content | read-only, push refused |
+| clean-room eligible | writable, push granted |
 
 The model never chooses its privilege; the run's provenance does. The
-enforcement point is the ref write — the push refuses a tainted run —
-backed by the read-only mount. Reading is fine — world→person is the safe
-direction. Stated honestly: `self/runs/` mounts the worker's raw past
-transcripts into every run, clean ones included, so the mount-level
-guarantee is narrower than it once was — a worker is scoped to trusted
-channels, and that scoping is what makes the trade acceptable. The
-participant scan still checks pushed files against the current run's
-participants. (The worker's [store](store.md) is deliberately outside this
-system: it mounts read-write in every run, and the discretion about what
-lands there is the worker's own.)
+enforcement point is the ref write — the push refuses a run that carried
+interaction content — backed by the read-only mount. Reading is fine —
+world→person is the safe direction. Stated honestly: `self/runs/` mounts
+the worker's raw past transcripts into every run, clean-room ones
+included, so the mount-level guarantee is narrower than it once was — a
+worker is scoped to trusted channels, and that scoping is what makes the
+trade acceptable. The participant scan still checks pushed files against
+the current run's participants. (The worker's [store](store.md) is
+deliberately outside this system: it mounts read-write in every run, and
+the discretion about what lands there is the worker's own.)
 
 **The bridge.** A conversation that surfaces something worth durable
 research files a task (`file_task`) instead of writing the repo. The filed
-task is worker-only by construction, so it runs clean with writable
-clones. That makes the task prompt the entire residual leak surface — one
-paragraph per crossing, journaled and scannable — instead of a wide border
-of bulk file writes.
+task is worker-only by construction, so it runs clean-room eligible with
+writable clones. That makes the task prompt the entire residual leak
+surface — one paragraph per crossing, journaled and scannable — instead
+of a wide border of bulk file writes.
 
 **The scan.** The host knows exactly who was in the filing run, so it
-checks `file_task` prompts from tainted runs (and every changed file at
-push time) against those participants: their ids, display names, mention
-syntax, email addresses. A hit is denied with a legible reason — "names a
-conversation participant; that belongs in memory" — and journaled. Stated
-honestly: paraphrase still passes the scan. The scan polices the choke
-point; the hard guarantees are the read-only clone and the refused push.
+checks `file_task` prompts from runs that carried interaction content
+(and every changed file at push time) against those participants: their
+ids, display names, mention syntax, email addresses. A hit is denied with
+a legible reason — "names a conversation participant; that belongs in
+memory" — and journaled. Stated honestly: paraphrase still passes the
+scan. The scan polices the choke point; the hard guarantees are the
+read-only clone and the refused push. The scan belongs to gated repos:
+a worker granted none has nothing it protects, and the scan does not
+engage.
 
-The default policy is `write_from = "clean-room"` in `org.toml
+The org-wide default is `write_from = "clean-room"` in `org.toml
 [knowledge]`; `"any-run"` reverts to scan-only behavior for deployments
-that accept the tradeoff. Limits (file size, repo size, the deletion gate)
-are in [configuration.md](configuration.md); per-worker overlays can
-tighten them but never loosen.
+that accept the tradeoff. A gated connection may declare its **own**
+contract in its connection file — `write_from = "any-run"` on a
+permissive scratch repo coexists with a strict default (and the reverse) —
+the connection's word beats the org default for that repo. Limits (file
+size, repo size, the deletion gate) are in
+[configuration.md](configuration.md); per-worker overlays can tighten
+them but never loosen.
 
 ## Current limitations
 
-- One policy set (`[knowledge]` limits, clean-room rule) applies to every
-  gated repo a worker touches — there is no per-connection policy yet.
+- One limit set (`[knowledge]` file size, repo size, deletion gate)
+  applies to every gated repo a worker touches — only the `write_from`
+  contract is per-connection so far.
 - Gated connections must point at a **bare** repository; config refuses a
   checkout (advancing a checked-out branch would desync its worktree).
 - No owner command for redacting content that made it into `main`'s

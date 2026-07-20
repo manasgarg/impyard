@@ -739,8 +739,11 @@ pub fn set_tasks(
     }
 
     // The participant scan guards the choke point: new or changed prompts
-    // written from a tainted room must not name the people in it.
-    if ctx.tainted() {
+    // written from a room must not name the people in it. It exists to
+    // protect gated repos (a filed task later runs clean-room with writable
+    // clones) — a worker granted none has nothing to protect, and the scan
+    // does not engage.
+    if ctx.carries_interaction() && crate::worker::knowledge::boundary_applies(worker) {
         for (id, prompt, old_prompt) in tasks
             .iter()
             .map(|t| {

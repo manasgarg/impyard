@@ -38,8 +38,9 @@ readable at `$HOME/self/runs/` — memory is what the worker distills;
 `self/runs/` is the undigested record it can always go back to.
 
 Runs still record **provenance** — which provider, channel, and user a
-run served (`run-context.json` in the run dir). That powers the taint
-rule and the participant scan; it is attribution, not memory.
+run served (`run-context.json` in the run dir). That record is the input
+to the clean-room rule and the participant scan ([repos.md](repos.md));
+it is attribution, not memory.
 
 Deployments upgraded from the host-memory era: `roster migrate` seeds
 `store/memory/memory.jsonl` with a copy of the old host-owned

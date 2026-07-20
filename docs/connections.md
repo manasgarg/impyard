@@ -201,6 +201,8 @@ mode = "ro"                   # or "rw"
 kind  = "host-repo"
 path  = "/home/you/research-kb.git"
 write = "gated"               # or "ro"; gated needs a bare repo
+# write_from = "any-run"      # this repo's own write contract; default:
+                              # the org [knowledge] write_from (repos.md)
 
 [grant.org]                   # the fleet-wide edge
 ```

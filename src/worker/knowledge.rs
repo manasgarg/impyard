@@ -44,9 +44,10 @@ pub struct Checkout {
     pub path: PathBuf,
     pub base_commit: String,
     pub knowledge_policy: KnowledgePolicy,
-    /// False for tainted runs under clean-room policy: the clone mounts
-    /// read-only and the push refuses. The enforcement point for the
-    /// person-space boundary is the ref write, backed by the ro mount.
+    /// False when the run carried interaction content and this repo's write
+    /// contract is "clean-room": the clone mounts read-only and the push
+    /// refuses. The enforcement point for the person-space boundary is the
+    /// ref write, backed by the ro mount.
     pub writable: bool,
 }
 
@@ -79,29 +80,66 @@ pub struct RunStorage {
     pub repos: Vec<Checkout>,
 }
 
+/// A gated host-repo connection granted to the worker: name, canonical bare
+/// repo, and — when the connection file declares one — its own `write_from`
+/// contract overriding the org `[knowledge]` default.
+struct GatedSpec {
+    connection: String,
+    bare: PathBuf,
+    write_from: Option<String>,
+}
+
 /// The gated repos a worker's runs provision: every gated host-repo
 /// connection granted to it, plus the legacy per-worker knowledge repo as an
 /// implicit connection named "knowledge" while no connection file claims that
 /// name — so pre-migration deployments keep working untouched.
-fn gated_specs(worker: &str) -> Vec<(String, PathBuf)> {
-    let mut specs: Vec<(String, PathBuf)> = Vec::new();
+fn gated_specs(worker: &str) -> Vec<GatedSpec> {
+    let mut specs: Vec<GatedSpec> = Vec::new();
     if let Ok(config) = crate::config::snapshot() {
         for m in &config.host_mounts {
-            if let crate::config::HostMountKind::Repo { gated: true, .. } = &m.kind {
+            if let crate::config::HostMountKind::Repo {
+                gated: true,
+                write_from,
+                ..
+            } = &m.kind
+            {
                 if m.applies_to(worker) {
-                    specs.push((m.name.clone(), m.path.clone()));
+                    specs.push(GatedSpec {
+                        connection: m.name.clone(),
+                        bare: m.path.clone(),
+                        write_from: write_from.clone(),
+                    });
                 }
             }
         }
     }
     let legacy = paths::worker_knowledge_dir(worker).join("repo.git");
-    if legacy.join("HEAD").is_file() && !specs.iter().any(|(n, _)| n == "knowledge") {
-        specs.insert(0, ("knowledge".into(), legacy));
-    } else if let Some(pos) = specs.iter().position(|(n, _)| n == "knowledge") {
+    if legacy.join("HEAD").is_file() && !specs.iter().any(|s| s.connection == "knowledge") {
+        specs.insert(
+            0,
+            GatedSpec {
+                connection: "knowledge".into(),
+                bare: legacy,
+                write_from: None,
+            },
+        );
+    } else if let Some(pos) = specs.iter().position(|s| s.connection == "knowledge") {
         let s = specs.remove(pos);
         specs.insert(0, s);
     }
     specs
+}
+
+/// Does the participant scan have anything to protect for this worker? The
+/// scan polices the `file_task` bridge into clean-room runs holding writable
+/// gated clones — a worker with no gated repo granted has no such runs, and
+/// the scan does not engage (docs/repos.md).
+pub fn boundary_applies(worker: &str) -> bool {
+    let worker = short_worker(worker);
+    if safe_component(worker, "worker").is_err() {
+        return true; // fail closed: a malformed name never disables the scan
+    }
+    crate::worker::storage::load(worker).knowledge.enabled && !gated_specs(worker).is_empty()
 }
 
 /// What a landed push did, reported back to the box as the action result.
@@ -148,15 +186,15 @@ struct FileData {
     bytes: Vec<u8>,
 }
 
-pub fn provision(worker: &str, run_id: &str, tainted: bool) -> Result<RunStorage, String> {
+pub fn provision(
+    worker: &str,
+    run_id: &str,
+    context: &crate::worker::memory::RunContext,
+) -> Result<RunStorage, String> {
     let worker = short_worker(worker);
     safe_component(worker, "worker")?;
     safe_component(run_id, "run id")?;
     let policy = crate::worker::storage::load(worker);
-    // The memory/knowledge boundary: a run that saw interaction content never
-    // gets a writable clone under clean-room policy — the provenance of the
-    // run decides, not the model.
-    let writable = !(tainted && policy.knowledge.write_from == "clean-room");
 
     if !policy.knowledge.enabled {
         crate::run::runlog::attach_storage(run_id, Default::default())?;
@@ -165,8 +203,22 @@ pub fn provision(worker: &str, run_id: &str, tainted: bool) -> Result<RunStorage
 
     let mut repos: Vec<Checkout> = Vec::new();
     let mut records: BTreeMap<String, KnowledgeRunRecord> = BTreeMap::new();
-    for (connection, bare) in gated_specs(worker) {
+    for GatedSpec {
+        connection,
+        bare,
+        write_from,
+    } in gated_specs(worker)
+    {
         safe_component(&connection, "connection")?;
+        // The clean-room rule, evaluated here — the host-repo path is the
+        // predicate's owner: a run that carried interaction content never
+        // gets a writable clone under "clean-room". The run's provenance
+        // decides, not the model; the connection's own write_from beats the
+        // org [knowledge] default.
+        let contract = write_from
+            .as_deref()
+            .unwrap_or(policy.knowledge.write_from.as_str());
+        let writable = !(context.carries_interaction() && contract == "clean-room");
         prune_quarantine(&bare);
         let path = paths::run_dir(run_id).join("repos").join(&connection);
         if path.exists() {
@@ -273,8 +325,8 @@ pub fn push(
     }
     let bare = gated_specs(worker)
         .into_iter()
-        .find(|(n, _)| n == connection)
-        .map(|(_, p)| p)
+        .find(|s| s.connection == connection)
+        .map(|s| s.bare)
         .ok_or_else(|| format!("no gated repo connection \"{connection}\" for this worker"))?;
     let policy = crate::worker::storage::load(worker).knowledge;
     match push_inner(
@@ -630,10 +682,10 @@ fn backstop_inner(checkout: &Checkout) -> Result<(), String> {
 pub fn parked_runs(worker: &str) -> Vec<(String, String, u64)> {
     gated_specs(short_worker(worker))
         .into_iter()
-        .flat_map(|(connection, bare)| {
-            parked_refs_of(&bare)
+        .flat_map(|spec| {
+            parked_refs_of(&spec.bare)
                 .into_iter()
-                .map(move |(name, age)| (connection.clone(), name, age))
+                .map(move |(name, age)| (spec.connection.clone(), name, age))
         })
         .collect()
 }
@@ -1239,7 +1291,12 @@ mod tests {
 
         initialize("dobby").unwrap();
         crate::run::runlog::start("run1", "dobby", "task", None).unwrap();
-        let storage = provision("dobby", "run1", false).unwrap();
+        let storage = provision(
+            "dobby",
+            "run1",
+            &crate::worker::memory::RunContext::default(),
+        )
+        .unwrap();
         let co = storage.repos.first().unwrap();
         assert_eq!(co.connection, "knowledge");
         assert!(co.writable);
@@ -1280,7 +1337,12 @@ mod tests {
 
         // A second run provisioned earlier goes stale, rebases, lands.
         crate::run::runlog::start("run2", "dobby", "task", None).unwrap();
-        let storage2 = provision("dobby", "run2", false).unwrap();
+        let storage2 = provision(
+            "dobby",
+            "run2",
+            &crate::worker::memory::RunContext::default(),
+        )
+        .unwrap();
         let co2 = storage2.repos.first().unwrap();
         // Pretend run2 cloned before run1 landed: rewind its view of main.
         let old_main = run_git(&co2.path, &["rev-list", "--max-parents=0", "HEAD"]).unwrap();
@@ -1346,12 +1408,38 @@ mod tests {
         assert_eq!(parked[0].0, "knowledge");
         assert!(parked[0].1.ends_with("run-run2"), "{}", parked[0].1);
 
-        // A tainted run under clean-room gets a read-only clone; push refuses.
+        // A run that carried interaction content, under clean-room, gets a
+        // read-only clone; push refuses.
         crate::run::runlog::start("run3", "dobby", "task", None).unwrap();
-        let storage3 = provision("dobby", "run3", true).unwrap();
+        let storage3 = provision(
+            "dobby",
+            "run3",
+            &crate::worker::memory::RunContext::assume_interaction(),
+        )
+        .unwrap();
         assert!(!storage3.repos.first().unwrap().writable);
         let error = push("dobby", "run3", "knowledge", &rebased, false).unwrap_err();
         assert!(error.contains("read-only"), "{error}");
+
+        std::env::remove_var("ROSTER_ROOT");
+        drop(guard);
+    }
+
+    #[test]
+    fn boundary_applies_only_with_a_gated_repo() {
+        let guard = crate::statefile::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("ROSTER_ROOT", dir.path());
+
+        // No gated repo granted: the scan has nothing to protect.
+        assert!(!boundary_applies("dobby"));
+        // The legacy knowledge repo counts as a gated grant.
+        initialize("dobby").unwrap();
+        assert!(boundary_applies("dobby"));
+        // A malformed name never disables the scan.
+        assert!(boundary_applies("../oops"));
 
         std::env::remove_var("ROSTER_ROOT");
         drop(guard);

@@ -951,12 +951,16 @@ pub fn ls(json: bool) -> Result<(), BErr> {
             crate::config::HostMountKind::Dir { rw } => {
                 ("host-dir", if *rw { "rw".to_string() } else { "ro".to_string() })
             }
-            crate::config::HostMountKind::Repo { gated, branch } => (
+            crate::config::HostMountKind::Repo {
+                gated,
+                branch,
+                write_from,
+            } => (
                 "host-repo",
-                if *gated {
-                    format!("gated → {branch}")
-                } else {
-                    "ro".to_string()
+                match (*gated, write_from.as_deref()) {
+                    (true, Some(contract)) => format!("gated → {branch}, {contract}"),
+                    (true, None) => format!("gated → {branch}"),
+                    (false, _) => "ro".to_string(),
                 },
             ),
         };

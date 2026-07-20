@@ -111,8 +111,9 @@ pub async fn dispatch_loop(cap: usize, once: bool) -> Result<(), BErr> {
                     first_line(&task.prompt)
                 );
                 // Routing, not provenance: the origin channel reaches the
-                // box through the briefing while the run context stays clean
-                // (the tainting context.discord path is only for relays).
+                // box through the briefing while the run context carries no
+                // interaction content (the context.discord path, which does
+                // carry it, is only for relays).
                 let reply_to = if memory_context.channel_id.is_none() {
                     task.tags
                         .provider

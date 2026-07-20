@@ -158,7 +158,7 @@ Worker overlays allowed, like `[context]`.
 | key | default | meaning |
 |---|---|---|
 | `enabled` | `true` | |
-| `write_from` | `"clean-room"` | `"clean-room"`: only runs without person-data may write; `"any-run"`: scan-only legacy behavior |
+| `write_from` | `"clean-room"` | the default write contract for gated repos — `"clean-room"`: only runs without person-data may write; `"any-run"`: scan-only. A `write_from` in a gated connection file beats this default for that repo ([repos.md](repos.md)) |
 | `max_file_chars` | 200000 | per-file cap |
 | `max_repo_bytes` | 1000000000 | repo size cap |
 | `max_deletions_ungated` | 20 | a `repo_push` deleting more files than this waits for a human gate |

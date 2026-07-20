@@ -35,8 +35,9 @@ pub enum RunSurface {
 }
 
 /// Where a task's results should be delivered — routing metadata, never
-/// provenance: it names a room without tainting the run (a clean run keeps
-/// its writable knowledge clone).
+/// provenance: it names a room without putting interaction content in the
+/// run (the run keeps its clean-room eligibility, so gated clones stay
+/// writable).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplyTo {
     pub provider: String,
@@ -840,7 +841,7 @@ fn runtime_scope(request: &ContextRequest) -> String {
         RunSurface::QueuedTask => {
             let scope = if let Some(channel) = request.run_context.channel_id.as_deref() {
                 // Interaction content is in the run (a relay-style task):
-                // tainted, channel material mounted.
+                // channel material mounted, clean-room eligibility gone.
                 format!(
                     "This is a queued Roster task associated with Discord channel {channel}. Use discord_send with exactly that channel id when a reply is needed. The authorized channel material is mounted read-only at $HOME/channel."
                 )

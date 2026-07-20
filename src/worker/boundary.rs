@@ -1,11 +1,13 @@
-//! The participant scan — police for the memory/knowledge boundary
-//! (docs/repos.md). Generic PII detection is mushy; roster has
-//! an unfair advantage: the host knows exactly who was in a run. Markers are
-//! the run's own channel participants (ids + display names from the channel
-//! history) plus chat-mention syntax. Applied at the two crossing points:
-//! `file_task` payloads filed from tainted runs, and new knowledge records at
-//! checkpoint. Known limit, stated honestly: paraphrase passes the scan — the
-//! hard guarantee is the read-only mount; the scan polices the choke point.
+//! The participant scan — the host-repo boundary's police (docs/repos.md).
+//! It exists to protect gated repos: the clean-room rule keeps conversation
+//! content out of writable clones, and the scan covers the two crossing
+//! points that remain — `file_task` payloads filed from runs that carried
+//! interaction content, and pushed files at land time. Generic PII detection
+//! is mushy; roster has an unfair advantage: the host's run provenance says
+//! exactly who was in a run. Markers are the run's own channel participants
+//! (ids + display names from the channel history) plus chat-mention syntax.
+//! Known limit, stated honestly: paraphrase passes the scan — the hard
+//! guarantee is the read-only mount; the scan polices the choke point.
 
 use crate::worker::memory::RunContext;
 use serde_json::Value;
@@ -38,11 +40,12 @@ pub fn participant_markers(context: &RunContext) -> Vec<String> {
     markers.into_iter().filter(|m| m.len() >= 3).collect()
 }
 
-/// The `file_task` choke point: may this run file this prompt? Clean runs pass
-/// (they hold no person-data to launder); tainted runs are scanned against
-/// their own participants. Err carries the worker-facing reason.
+/// The `file_task` choke point: may this run file this prompt? Runs that
+/// carried no interaction content pass (they hold no person-data to
+/// launder); the rest are scanned against their own participants. Err
+/// carries the worker-facing reason.
 pub fn check_task_prompt(context: &RunContext, prompt: &str) -> Result<(), String> {
-    if !context.tainted() {
+    if !context.carries_interaction() {
         return Ok(());
     }
     match scan(prompt, &participant_markers(context), true) {
@@ -143,7 +146,7 @@ mod tests {
     }
 
     #[test]
-    fn task_prompt_gate_denies_person_references_from_tainted_runs_only() {
+    fn task_prompt_gate_denies_person_references_from_interaction_runs_only() {
         let clean = RunContext::default();
         let relay = RunContext {
             inbound: true,
@@ -157,7 +160,8 @@ mod tests {
         let personal = "Ask lead-person@example.com to review the XDG summary.";
         let worldly = "Research the XDG base directory specification and record a summary.";
 
-        // A tainted run cannot smuggle a person across the boundary...
+        // A run that carried interaction content cannot smuggle a person
+        // across the boundary...
         let err = check_task_prompt(&relay, personal).unwrap_err();
         assert!(
             err.contains("lead-person@example.com") && err.contains("belongs in memory"),
