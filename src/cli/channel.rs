@@ -261,8 +261,3 @@ fn current_settings(channel_id: &str) -> ChannelSettings {
         .cloned()
         .unwrap_or_default()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-}

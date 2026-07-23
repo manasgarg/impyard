@@ -104,6 +104,7 @@ size:
 - **Search & files**: ripgrep, fd, tree, file, less
 - **Python**: python3, pip, venv, `uv`
 - **Node**: node 24, npm, pnpm/yarn via corepack
+- **Research workflow**: `rwf`, the append-only shared research notes and artifacts CLI
 - **Build**: build-essential, pkg-config (native pip/npm extensions)
 - **Documents & media**: pandoc, imagemagick, ffmpeg
 - **Misc**: openssl, procps, moreutils, tzdata
@@ -115,10 +116,11 @@ its tag.
 
 ## The engine and its tools
 
-pi and the box extensions are **baked into the image** at
-`/opt/roster/engine` — the box does not depend on your checkout. (For
-development, `[engine] dir` in `org.toml` mounts a checkout read-only over
-the baked engine.)
+pi, `rwf`, and the box extensions are **baked into the image** at
+`/opt/roster/engine` — the box does not depend on your checkout. For
+development, `[engine] dir` in `org.toml` mounts a checkout read-only and its
+`node_modules/.bin` takes precedence. Running the research-workflow TypeScript
+compiler in watch mode therefore updates `rwf` without rebuilding the image.
 
 The extensions are the worker's hands, in two files under `box/extensions/`:
 

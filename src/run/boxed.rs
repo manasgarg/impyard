@@ -967,6 +967,15 @@ async fn provision_box(
     args.push("-v".into());
     args.push(format!("{}:{BOX_CA_BUNDLE_PATH}:ro", host_bundle.display()));
     args.extend(["-e".into(), format!("HOME={PIHOME_MOUNT}")]);
+    if let Engine::Mounted(repo) = &engine {
+        args.extend([
+            "-e".into(),
+            format!(
+                "PATH={}/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                repo.display()
+            ),
+        ]);
+    }
     args.extend([
         "-e".into(),
         format!("PI_CODING_AGENT_DIR={PIHOME_MOUNT}/agent"),

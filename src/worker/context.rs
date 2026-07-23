@@ -1066,6 +1066,31 @@ fn engine_fingerprint() -> String {
                     digest.update(bytes);
                 }
             }
+            let rwf_dist = base.join("packages/research-workflow/dist");
+            let mut rwf_files = std::fs::read_dir(&rwf_dist)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.is_file())
+                .collect::<Vec<_>>();
+            rwf_files.sort();
+            for path in rwf_files {
+                digest.update(
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .as_bytes(),
+                );
+                if let Ok(bytes) = std::fs::read(path) {
+                    digest.update(bytes);
+                }
+            }
+            let rwf_schema = base.join("packages/research-workflow/schemas/manifest.schema.json");
+            if let Ok(bytes) = std::fs::read(rwf_schema) {
+                digest.update(b"research-workflow/manifest.schema.json");
+                digest.update(bytes);
+            }
             let mut extensions = std::fs::read_dir(base.join("box/extensions"))
                 .into_iter()
                 .flatten()

@@ -2,14 +2,20 @@
   "name": "roster",
   "version": "0.0.1",
   "private": true,
-  "description": "pi (the engine) is the only Node dependency — mounted read-only into the box. All host-side code is Rust (the `roster` binary). Run `npm install` once to provide pi to the box.",
+  "description": "Roster host runtime plus npm workspaces for the agent engine and research-workflow CLI.",
+  "workspaces": [
+    "packages/research-workflow"
+  ],
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "test": "cargo test"
+    "build:rwf": "npm run build --workspace @manasgarg/research-workflow",
+    "check:rwf": "npm run check --workspace @manasgarg/research-workflow",
+    "test": "cargo test && npm test --workspace @manasgarg/research-workflow"
   },
   "dependencies": {
+    "@manasgarg/research-workflow": "0.0.0",
     "@earendil-works/pi-coding-agent": "0.80.3",
     "defuddle": "0.19.1",
     "linkedom": "0.18.12"

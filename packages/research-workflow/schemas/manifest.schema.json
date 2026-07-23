@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.research-workflow.dev/manifest/v1.json",
+  "title": "Research Workflow Manifest",
+  "type": "object",
+  "required": [
+    "$schema",
+    "schema_version",
+    "generated_at",
+    "notes",
+    "artifacts"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/note"
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/artifact"
+      }
+    }
+  },
+  "$defs": {
+    "status": {
+      "enum": [
+        "active",
+        "superseded",
+        "deleted"
+      ]
+    },
+    "base": {
+      "type": "object",
+      "required": [
+        "id",
+        "type",
+        "status",
+        "title",
+        "created_at",
+        "metadata",
+        "action",
+        "targets",
+        "canonical_path",
+        "current_path"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+        },
+        "type": {
+          "enum": [
+            "note",
+            "artifact"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/status"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "metadata": {
+          "type": "object"
+        },
+        "action": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "supersede",
+            "delete",
+            "restore",
+            null
+          ]
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "canonical_path": {
+          "type": "string"
+        },
+        "current_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "note": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "required": [
+            "artifacts",
+            "content_sha256"
+          ],
+          "properties": {
+            "type": {
+              "const": "note"
+            },
+            "artifacts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "content_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      ]
+    },
+    "artifact": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base"
+        },
+        {
+          "type": "object",
+          "required": [
+            "payload_path",
+            "filename",
+            "media_type",
+            "size",
+            "sha256"
+          ],
+          "properties": {
+            "type": {
+              "const": "artifact"
+            },
+            "payload_path": {
+              "type": "string"
+            },
+            "filename": {
+              "type": "string"
+            },
+            "media_type": {
+              "type": "string"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
