@@ -305,6 +305,50 @@ export default function rosterActionTools(api: PiToolApi): void {
     });
   }
 
+  // skill_push — land committed edits to $HOME/skills on the worker's
+  // skills canonical. Unlike gated repos, skills accept pushes from every
+  // run kind: they are the worker's own how-to guides (see the meta-skill).
+  api.registerTool({
+    name: "skill_push",
+    label: "skill_push",
+    description:
+      "Land your committed skill edits from $HOME/skills on the shared skills history. Edit or add " +
+      "<skill>/SKILL.md files, git add and commit in $HOME/skills first; this bundles your branch and " +
+      "submits it — the host validates (well-formed frontmatter, text files, size caps) and fast-forwards. " +
+      "If it answers \"stale: main moved\", run `git fetch origin && git rebase origin/main` in $HOME/skills " +
+      "and call this again. Push before the run ends — unpushed skill edits vanish with the run.",
+    promptSnippet: "skill_push([rationale]): land committed edits to your skills ($HOME/skills)",
+    parameters: {
+      type: "object",
+      properties: {
+        rationale: { type: "string", description: "One line on what this changes." },
+      },
+      additionalProperties: false,
+    },
+    async execute(_id, params) {
+      const say = (text: string) => ({ content: [{ type: "text" as const, text }] });
+      const { execFile } = await import("node:child_process");
+      const skillsDir = `${process.env.HOME ?? "/pihome"}/skills`;
+      const git = (...args: string[]): Promise<{ ok: boolean; out: string }> =>
+        new Promise((resolve) => {
+          execFile("git", ["-C", skillsDir, ...args], { timeout: 60_000 }, (error, stdout, stderr) => {
+            resolve({ ok: !error, out: (error ? `${stdout}\n${stderr}` : stdout).trim() });
+          });
+        });
+      const dirty = await git("status", "--porcelain");
+      if (!dirty.ok) return say(`Could not inspect $HOME/skills: ${dirty.out}`);
+      if (dirty.out !== "") return say("Uncommitted changes in $HOME/skills — git add and commit them first, then push.");
+      const head = await git("rev-parse", "HEAD");
+      if (!head.ok) return say(`Could not resolve HEAD: ${head.out}`);
+      const range = await git("rev-list", "--count", "origin/main..HEAD");
+      if (range.ok && range.out === "0") return say("Nothing to push — your branch has no commits beyond origin/main.");
+      const bundle = await git("bundle", "create", ".git/roster-push.bundle", "origin/main..HEAD");
+      if (!bundle.ok) return say(`Could not bundle the branch: ${bundle.out}`);
+      const s = await submit("skill-push", { head: head.out }, (params.rationale as string) ?? "");
+      return say(describe(s));
+    },
+  });
+
   // repo_push — land a committed branch on a gated repo's shared main.
   // Registered when this run holds at least one writable repo checkout
   // (ROSTER_REPOS_JSON lists every checkout: connection, dir, mode).

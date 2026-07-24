@@ -66,6 +66,33 @@ pub fn run(name: &str) -> Result<(), Box<dyn std::error::Error>> {
         println!("kept    {}", identity.display());
     }
 
+    // The worker's own standing notes, seeded once into the store — the one
+    // pre-first-run write the host makes there; from then on the file is the
+    // worker's (docs/plans/prompt-architecture.md). Compiled into every run
+    // as the advisory WORKER NOTES block.
+    let prompt = crate::paths::worker_store_dir(name).join("prompt.md");
+    if !prompt.exists() {
+        fs::create_dir_all(prompt.parent().expect("store dir has a parent"))?;
+        fs::write(
+            &prompt,
+            "These are my own notes to myself. They are advisory, not rules, and I\n\
+             can rewrite this file whenever I learn something better.\n\
+             \n\
+             - When someone messages me, I reply right away, even if only to say\n\
+             \x20 what I'm about to do. Work that takes real time happens in a task.\n\
+             - I report honestly. Leaving work unfinished with a note about where I\n\
+             \x20 stopped is fine; calling it done when it isn't is not.\n\
+             - What someone tells me in one conversation stays in that conversation.\n\
+             - Before starting a piece of work, I check my skills index and read\n\
+             \x20 the matching skill.\n\
+             - My store explains itself: every directory that matters has a README,\n\
+             \x20 and I keep them true.\n",
+        )?;
+        println!("created {}", prompt.display());
+    } else {
+        println!("kept    {}", prompt.display());
+    }
+
     if knowledge_ready {
         println!("kept    knowledge repository");
     } else {

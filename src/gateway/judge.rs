@@ -112,7 +112,7 @@ fn matches_except_method(m: &Match, req: &GovernedRequest) -> bool {
                     .map(str::to_string)
             });
         match class {
-            Some(c) if classes.iter().any(|want| *want == c) => {}
+            Some(c) if classes.contains(&c) => {}
             _ => return false,
         }
     }

@@ -6,6 +6,7 @@ pub mod context;
 pub mod journal;
 pub mod knowledge;
 pub mod memory;
+pub mod skills;
 pub mod storage;
 pub mod store;
 

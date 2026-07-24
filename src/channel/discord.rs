@@ -920,6 +920,7 @@ const SESSION_IDLE_SECS: u64 = 90;
 /// Deliver a message to the channel's live session, or start a new one. A live
 /// session keeps the box warm across messages; it exits on idle (its sender then
 /// reads closed, and the next message starts a fresh one).
+#[allow(clippy::too_many_arguments)]
 async fn route_to_session(
     worker: &str,
     channel_id: &str,

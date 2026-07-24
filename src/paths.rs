@@ -168,6 +168,12 @@ pub fn worker_knowledge_dir(worker: &str) -> PathBuf {
     worker_data_dir(worker).join("knowledge")
 }
 
+/// The worker's host-canonical skills (worker/skills.rs): a bare repo the
+/// box never touches directly — runs mount a materialized checkout.
+pub fn worker_skills_dir(worker: &str) -> PathBuf {
+    worker_data_dir(worker).join("skills")
+}
+
 pub fn worker_gates_pending_dir(worker: &str) -> PathBuf {
     worker_data_dir(worker).join("gates").join("pending")
 }

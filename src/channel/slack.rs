@@ -566,6 +566,7 @@ const SESSION_IDLE_SECS: u64 = 90;
 /// Deliver a message to the channel's live session, or start a new one —
 /// the same warm-box pattern as Discord (idle exit, sender replaced on next
 /// message). No typing indicator: Socket Mode has none.
+#[allow(clippy::too_many_arguments)]
 async fn route_to_session(
     worker: &str,
     channel_id: &str,

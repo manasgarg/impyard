@@ -84,6 +84,20 @@ Everything else lives in [docs/](docs/README.md): the architecture and
 security model, connecting workers to services like GitHub, budgets, work and
 scheduling, Slack, memory, and knowledge.
 
+## Development
+
+The repository pins Rust, Node, and `just` with [mise](https://mise.jdx.dev/):
+
+```bash
+mise install
+just setup
+just check
+```
+
+`just --list` shows the repository workflows. The TypeScript
+`@manasgarg/research-workflow` workspace builds the `rwf` CLI; use
+`just rwf-watch` while iterating on it.
+
 ## Credits
 
 Roster builds on ideas proven elsewhere first:

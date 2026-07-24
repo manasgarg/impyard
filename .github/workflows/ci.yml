@@ -15,10 +15,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: npm install
+        run: npm ci
+      - name: rwf check
+        run: npm run check:rwf
+      - name: rwf test
+        run: npm test --workspace @manasgarg/research-workflow
       - name: fmt
         run: cargo fmt --check
       - name: clippy

@@ -762,6 +762,15 @@ async fn provision_box(
     std::fs::create_dir_all(&session)?;
     let store = crate::worker::store::provision(worker)?;
     let storage = crate::worker::knowledge::provision(worker, run_id, run_context)?;
+    // Skills are advisory — a provisioning failure degrades the run (no
+    // skills mount), never kills it.
+    let skills = match crate::worker::skills::provision(worker, run_id) {
+        Ok(checkout) => Some(checkout),
+        Err(error) => {
+            eprintln!("run {run_id}: skills provisioning failed — {error}");
+            None
+        }
+    };
 
     let has_auth = prepare_pihome(&pihome, &home)?;
     if !has_auth && std::env::var("ANTHROPIC_API_KEY").is_err() {
@@ -840,6 +849,29 @@ async fn provision_box(
         "-v".into(),
         format!("{}:{STORE_MOUNT}", store.display()),
     ]);
+    // The worker's skills: a writable clone on a run-named branch, present
+    // in every run kind — skills are the worker's own truth, so edits are
+    // accepted everywhere and land through skill_push. The canonical mounts
+    // read-only as the clone's origin (fetchable after a stale push; a ref
+    // write from the box is a filesystem error). pi discovers the Agent
+    // Skills format here (box/extensions/skills.ts) and compiles the index
+    // into the prompt.
+    if let Some(skills) = &skills {
+        args.extend([
+            "-v".into(),
+            format!(
+                "{}:{}",
+                skills.path.display(),
+                crate::worker::skills::SKILLS_MOUNT
+            ),
+            "-v".into(),
+            format!(
+                "{}:{}:ro",
+                skills.bare.display(),
+                crate::worker::skills::SKILLS_ORIGIN_MOUNT
+            ),
+        ]);
+    }
     // Granted host mounts (host-dir / host-repo connections) under mnt/.
     // Gated repos are provisioned per-run by the repo machinery below, not
     // bound raw — a gated grant without provisioning must NOT fall back to
@@ -967,6 +999,15 @@ async fn provision_box(
     args.push("-v".into());
     args.push(format!("{}:{BOX_CA_BUNDLE_PATH}:ro", host_bundle.display()));
     args.extend(["-e".into(), format!("HOME={PIHOME_MOUNT}")]);
+    if let Engine::Mounted(repo) = &engine {
+        args.extend([
+            "-e".into(),
+            format!(
+                "PATH={}/node_modules/.bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                repo.display()
+            ),
+        ]);
+    }
     args.extend([
         "-e".into(),
         format!("PI_CODING_AGENT_DIR={PIHOME_MOUNT}/agent"),

@@ -1,0 +1,38 @@
+{
+  "name": "@manasgarg/research-workflow",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Append-only shared filesystem research notes and artifacts CLI",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "rwf": "./dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "schemas",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "ulid": "3.0.1",
+    "yaml": "2.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "ajv": "8.17.1",
+    "typescript": "5.9.3"
+  }
+}

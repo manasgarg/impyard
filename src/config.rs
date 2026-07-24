@@ -700,6 +700,7 @@ pub fn load() -> Result<Loaded, Vec<String>> {
 type CompiledConnection = (Connection, Vec<Value>, Vec<Expose>, Option<String>);
 
 /// Pure over the injected lookups, so it is unit-testable.
+#[allow(clippy::too_many_arguments)]
 fn compile_connection(
     name: &str,
     v: &toml::Value,
@@ -1049,7 +1050,7 @@ fn parse_edge_scope(
         } else {
             dim.clone()
         };
-        if !dims.iter().any(|d| *d == dim) {
+        if !dims.contains(&dim) {
             let declared = if dims.is_empty() {
                 "it declares none".to_string()
             } else {

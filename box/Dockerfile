@@ -1,3 +1,15 @@
+# Build the TypeScript research-workflow CLI without carrying its compiler or
+# source tree into the runtime image.
+FROM node:24-bookworm-slim AS rwf-build
+WORKDIR /build
+COPY package.json package-lock.json ./
+COPY packages/research-workflow/package.json packages/research-workflow/
+RUN npm ci
+COPY packages/research-workflow/tsconfig.json packages/research-workflow/
+COPY packages/research-workflow/schemas packages/research-workflow/schemas
+COPY packages/research-workflow/src packages/research-workflow/src
+RUN npm run build --workspace @manasgarg/research-workflow
+
 # The box: a CAPABLE machine behind a governed door (docs/box.md).
 # Tools are baked in deliberately — on the NAT-less network more binaries add
 # no egress power, and a missing tool is an illegible "no" that belongs to the
@@ -58,13 +70,18 @@ RUN corepack enable
 # the in-container privilege-escalation surface to nothing (F2).
 RUN find / -xdev -type f \( -perm -4000 -o -perm -2000 \) -exec chmod -s {} + 2>/dev/null || true
 
-# The engine: pi + extensions at the lockfile-pinned version. /opt/roster/engine/run-pi
-# is the stable entry the host invokes — it expands the baked extensions itself,
-# so the host never needs to inspect the image.
+# The engine and worker CLIs at lockfile-pinned versions.
+# /opt/roster/engine/run-pi is the stable entry the host invokes — it expands
+# the baked extensions itself, so the host never needs to inspect the image.
 COPY package.json package-lock.json /opt/roster/engine/
+COPY packages/research-workflow/package.json /opt/roster/engine/packages/research-workflow/
 RUN cd /opt/roster/engine && npm ci --omit=dev && npm cache clean --force
+COPY --from=rwf-build /build/packages/research-workflow/dist /opt/roster/engine/packages/research-workflow/dist
+COPY --from=rwf-build /build/packages/research-workflow/schemas /opt/roster/engine/packages/research-workflow/schemas
 COPY box/extensions /opt/roster/engine/box/extensions
-RUN node -e "const path=require('path');const dir='/opt/roster/engine/node_modules/@earendil-works/pi-coding-agent';const p=require(dir+'/package.json');const bin=typeof p.bin==='string'?p.bin:p.bin.pi;require('fs').symlinkSync(path.join(dir,bin),'/opt/roster/engine/pi')" \
+RUN chmod +x /opt/roster/engine/packages/research-workflow/dist/cli.js \
+  && node -e "const path=require('path');const dir='/opt/roster/engine/node_modules/@earendil-works/pi-coding-agent';const p=require(dir+'/package.json');const bin=typeof p.bin==='string'?p.bin:p.bin.pi;require('fs').symlinkSync(path.join(dir,bin),'/opt/roster/engine/pi')" \
+  && ln -s /opt/roster/engine/packages/research-workflow/dist/cli.js /usr/local/bin/rwf \
   && printf '#!/bin/sh\nexec node /opt/roster/engine/pi --no-extensions $(for f in /opt/roster/engine/box/extensions/*.ts; do printf -- "-e %%s " "$f"; done) "$@"\n' > /opt/roster/engine/run-pi \
   && chmod +x /opt/roster/engine/run-pi
 

@@ -527,6 +527,7 @@ pub async fn run_executor(
             _ => exec_file_task(worker, payload, run_id),
         },
         "knowledge" => exec_knowledge_push(worker, run_id, payload),
+        "skills" => exec_skills_push(worker, run_id, payload),
         "self" => exec_file_update(worker, payload),
         other => Err(format!("no executor \"{other}\" for intent \"{intent}\"")),
     }
@@ -553,6 +554,27 @@ fn exec_knowledge_push(worker: &str, run_id: &str, payload: &Value) -> Result<Va
         .ok_or("repo_push needs \"head\" (the commit sha to land)")?;
     let confirmed = payload.get("confirm_bulk_delete").and_then(Value::as_str) == Some("yes");
     let outcome = crate::worker::knowledge::push(worker, run_id, connection, head, confirmed)?;
+    Ok(json!({
+        "landed": outcome.commit,
+        "files": outcome.files,
+        "deletions": outcome.deletions,
+    }))
+}
+
+/// `skill_push` — land the run's committed skill edits on the worker's
+/// skills canonical (worker/skills.rs). Same bundle-quarantine-validate-land
+/// shape as repo_push, with skills' own access rule: accepted from every run
+/// kind, because skills are the worker's own truth. Validation before apply
+/// keeps the index honest — malformed frontmatter is refused, not landed.
+fn exec_skills_push(worker: &str, run_id: &str, payload: &Value) -> Result<Value, String> {
+    if run_id.is_empty() {
+        return Err("skill_push needs a trusted run context".into());
+    }
+    let head = payload
+        .get("head")
+        .and_then(Value::as_str)
+        .ok_or("skill_push needs \"head\" (the commit sha to land)")?;
+    let outcome = crate::worker::skills::push(worker, run_id, head)?;
     Ok(json!({
         "landed": outcome.commit,
         "files": outcome.files,

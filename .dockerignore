@@ -1,8 +1,16 @@
 # The box image builds from the repo root but needs only the engine inputs:
-# the npm manifest+lockfile and the box extensions. Everything else stays out
-# of the build context (target/ alone is gigabytes).
+# npm manifests, research-workflow sources, and box files. Everything else
+# stays out of the build context (target/ alone is gigabytes).
 *
 !package.json
 !package-lock.json
+!packages/
+!packages/research-workflow/
+!packages/research-workflow/package.json
+!packages/research-workflow/tsconfig.json
+!packages/research-workflow/schemas/
+!packages/research-workflow/schemas/**
+!packages/research-workflow/src/
+!packages/research-workflow/src/**
 !box/
 box/Dockerfile
