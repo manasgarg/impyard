@@ -762,6 +762,15 @@ async fn provision_box(
     std::fs::create_dir_all(&session)?;
     let store = crate::worker::store::provision(worker)?;
     let storage = crate::worker::knowledge::provision(worker, run_id, run_context)?;
+    // Skills are advisory — a provisioning failure degrades the run (no
+    // skills mount), never kills it.
+    let skills = match crate::worker::skills::provision(worker, run_id) {
+        Ok(path) => Some(path),
+        Err(error) => {
+            eprintln!("run {run_id}: skills provisioning failed — {error}");
+            None
+        }
+    };
 
     let has_auth = prepare_pihome(&pihome, &home)?;
     if !has_auth && std::env::var("ANTHROPIC_API_KEY").is_err() {
@@ -840,6 +849,19 @@ async fn provision_box(
         "-v".into(),
         format!("{}:{STORE_MOUNT}", store.display()),
     ]);
+    // The worker's skills: a read-only checkout of the host-canonical repo,
+    // present in every run kind. pi discovers the Agent Skills format here
+    // (box/extensions/skills.ts) and compiles the index into the prompt.
+    if let Some(skills) = &skills {
+        args.extend([
+            "-v".into(),
+            format!(
+                "{}:{}:ro",
+                skills.display(),
+                crate::worker::skills::SKILLS_MOUNT
+            ),
+        ]);
+    }
     // Granted host mounts (host-dir / host-repo connections) under mnt/.
     // Gated repos are provisioned per-run by the repo machinery below, not
     // bound raw — a gated grant without provisioning must NOT fall back to
