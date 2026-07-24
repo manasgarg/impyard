@@ -765,7 +765,7 @@ async fn provision_box(
     // Skills are advisory — a provisioning failure degrades the run (no
     // skills mount), never kills it.
     let skills = match crate::worker::skills::provision(worker, run_id) {
-        Ok(path) => Some(path),
+        Ok(checkout) => Some(checkout),
         Err(error) => {
             eprintln!("run {run_id}: skills provisioning failed — {error}");
             None
@@ -849,16 +849,26 @@ async fn provision_box(
         "-v".into(),
         format!("{}:{STORE_MOUNT}", store.display()),
     ]);
-    // The worker's skills: a read-only checkout of the host-canonical repo,
-    // present in every run kind. pi discovers the Agent Skills format here
-    // (box/extensions/skills.ts) and compiles the index into the prompt.
+    // The worker's skills: a writable clone on a run-named branch, present
+    // in every run kind — skills are the worker's own truth, so edits are
+    // accepted everywhere and land through skill_push. The canonical mounts
+    // read-only as the clone's origin (fetchable after a stale push; a ref
+    // write from the box is a filesystem error). pi discovers the Agent
+    // Skills format here (box/extensions/skills.ts) and compiles the index
+    // into the prompt.
     if let Some(skills) = &skills {
         args.extend([
             "-v".into(),
             format!(
-                "{}:{}:ro",
-                skills.display(),
+                "{}:{}",
+                skills.path.display(),
                 crate::worker::skills::SKILLS_MOUNT
+            ),
+            "-v".into(),
+            format!(
+                "{}:{}:ro",
+                skills.bare.display(),
+                crate::worker::skills::SKILLS_ORIGIN_MOUNT
             ),
         ]);
     }

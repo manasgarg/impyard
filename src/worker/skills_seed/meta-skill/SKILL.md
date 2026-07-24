@@ -50,11 +50,22 @@ description: How to organize a knowledge base — raw sources, atomic notes, ind
 
 ## Changing skills
 
-Right now `$HOME/skills` is read-only: the canonical copy lives with
-the host. To improve a skill or add one, draft the full `SKILL.md` in
-your store and propose it to your lead — directory name plus complete
-text. (Direct editing is planned; until it lands, proposing is the
-path.)
+`$HOME/skills` is a git checkout on a branch named for this run, and
+it is yours to edit in any run kind. The cycle:
+
+1. Edit or add `<skill>/SKILL.md`; `git add` and `git commit` in
+   `$HOME/skills`.
+2. Call `skill_push`. The host validates before anything lands —
+   well-formed frontmatter (a broken `name:` or missing `description:`
+   would silently drop the skill from your index, so it is refused
+   instead), plain text files, size caps — then fast-forwards the
+   shared history.
+3. "stale: main moved" means another run landed first:
+   `git fetch origin && git rebase origin/main`, then push again.
+
+Push before the run ends — unpushed skill edits vanish with the run.
+Every landing is journaled, and `git log` in the checkout is the
+history.
 
 ## If a skill isn't loading
 

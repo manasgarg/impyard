@@ -1,13 +1,14 @@
 /**
  * roster skills — point pi at the host-provisioned skills checkout.
  *
- * The host mounts a read-only checkout of the worker's skills repo at
- * $HOME/skills (src/worker/skills.rs). pi implements the Agent Skills
- * format natively: given the path, it parses each skill's frontmatter,
- * compiles the name + description index into the system prompt, and loads
- * bodies on demand. This extension's entire job is answering
- * resources_discover with that path — when the mount is absent (skills
- * provisioning degraded), it stays silent and the run proceeds without.
+ * The host mounts a writable clone of the worker's skills repo at
+ * $HOME/skills (src/worker/skills.rs); edits land via skill_push. pi
+ * implements the Agent Skills format natively: given the path, it parses
+ * each skill's frontmatter, compiles the name + description index into
+ * the system prompt, and loads bodies on demand. This extension's entire
+ * job is answering resources_discover with that path — when the mount is
+ * absent (skills provisioning degraded), it stays silent and the run
+ * proceeds without.
  */
 
 const SKILLS_DIR = `${process.env.HOME ?? "/pihome"}/skills`;
