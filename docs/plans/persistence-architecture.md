@@ -264,6 +264,24 @@ Plus one wrinkle: anything the platform reads back is a **form**
 (memory records, the schedule, config) — fill it the form's way.
 Everything else is freeform paper.
 
+## Build order (agreed 2026-07-24: persistence before prompt rearch)
+
+1. ✅ Skills as the first governed surface (rwf, landable everywhere).
+2. Worker prompt + dobby's memory triage — step 0 of the memory
+   migration: policy-like notes move to `store/prompt.md`, leaving
+   memory as person-facts ready for the scope_id split.
+3. cas-over-git for schedule and config — the second submission style;
+   the descriptor engine is generalized HERE, with both styles in
+   view. `file_update` becomes validate-first as part of it.
+4. Channel-scoped memory on the engine: per-channel canonicals,
+   per-note landings, mounts, recall via run provenance, scope_id
+   migration; the memory skill ships with it.
+5. DELEGATED mirrors (local GitHub worktrees) — independent; slot
+   anywhere after 3.
+
+Prompt rearch (manifest, prose diet, identity kernel) follows —
+written once, against finished machinery.
+
 ## Decisions from review (2026-07-24)
 
 - **Transport**: the familiar per-surface verbs stay (`set_tasks`,

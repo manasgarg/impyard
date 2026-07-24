@@ -276,29 +276,34 @@ grew.
   procedure paragraphs landing in tool descriptions, error strings, and
   the dev-workflow skill.
 
-## Build order (sketch)
+## Build order (resequenced 2026-07-24: persistence before prompt)
 
-1. Manifest skeleton: generate the core from wiring, set block order
-   (manifest → identity → worker → skills). Mechanical — no prose
-   deleted yet.
-2. Skills primitive: seed `store/skills/` as a git repo; add
-   `box/extensions/skills.ts` answering `resources_discover` with that
-   path — pi parses, indexes, and formats natively. Seed only skills
-   that document current behavior (memory's ships with the memory
-   change); pins deferred.
-3. Worker prompt: seed and compile `store/prompt.md` (capped, labeled)
-   into the stable prefix.
-4. Identity kernel: trim the seeded identity.md template; add the
+Prompt artifacts describe machinery, so they get written after the
+machinery is final — otherwise every manifest sentence, skill, and
+briefing describing persistence is written twice
+([persistence-architecture.md](persistence-architecture.md) carries
+the persistence sequence).
+
+1. ✅ Skills primitive — host-canonical repo, seeded, pi-native index,
+   `skill_push` landing from every run kind.
+2. ✅ Worker prompt — `store/prompt.md` compiled (capped, advisory
+   label) into the stable prefix; seeded at creation. Runs early
+   because it documents conduct, not machinery — and migrating dobby's
+   policy-like memory notes into it pre-cleans his memory for the
+   channel-scoped migration.
+3. The persistence program (cas-over-git + engine, channel-scoped
+   memory, mirrors) — see its doc.
+4. Manifest skeleton: generate the core from wiring, set block order.
+   Mechanical — no prose deleted yet.
+5. Prose diet: shrink runtime-policy through the orientation/
+   procedure/philosophy test — procedure onto tools, errors, and
+   skills (mostly deletion by now); philosophy into the worker-prompt
+   seed, or it dies.
+6. Identity kernel: trim the seeded identity.md template; add the
    in-box propose tool and the org.toml grant so the gated ladder is
    reachable.
-5. Prose diet: shrink the old runtime-policy text through the
-   orientation/procedure/philosophy test — procedure onto tools,
-   errors, and skills; what's left of philosophy into the worker-prompt
-   seed, or it dies.
-6. Migrate dobby: KB conventions become his research-workflow skill;
-   the blog-autonomy and self-improvement mandates either stay learned
-   (worker prompt) or get promoted through the gate into his kernel —
-   the lead's call.
+7. Migrate dobby's remaining pieces: mandates promoted through the
+   gate into his kernel, or kept learned — the lead's call.
 
 ## Open questions
 

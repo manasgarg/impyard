@@ -88,6 +88,7 @@ pub enum BlockKind {
     Identity,
     RuntimePolicy,
     Connections,
+    WorkerPrompt,
     Purpose,
     RuntimeScope,
     Memory,
@@ -302,6 +303,9 @@ fn compile_with_policy(
                 format!("roster:connections:v{SCHEMA_VERSION}"),
                 content,
             ));
+        }
+        if let Some(notes) = worker_prompt_block(&request.worker)? {
+            system_blocks.push(notes);
         }
         if let Some(channel) = request.run_context.channel_id.as_deref() {
             let path = crate::channel::discord::purpose_path(channel);
@@ -684,6 +688,37 @@ fn legacy_charter_path(worker: &str) -> PathBuf {
     paths::worker_dir(worker).join("charter.md")
 }
 
+/// The worker's own standing notes (docs/plans/prompt-architecture.md):
+/// `store/prompt.md`, compiled verbatim into every run under an explicit
+/// advisory header — the worker writes it, so it can never carry rules.
+/// The cap is the curation pressure; an over-cap file is truncated
+/// *visibly*, never silently.
+const WORKER_PROMPT_MAX_CHARS: usize = 4000;
+
+fn worker_prompt_block(worker: &str) -> Result<Option<CompiledBlock>, String> {
+    let path = crate::paths::worker_store_dir(crate::paths::short_worker(worker)).join("prompt.md");
+    let Some(text) = read_optional_text(&path)? else {
+        return Ok(None);
+    };
+    let header = "Your own notes to yourself — advisory, never rules. \
+                  The file is yours at $HOME/store/prompt.md.\n\n";
+    let mut body = text;
+    if char_count(&body) > WORKER_PROMPT_MAX_CHARS {
+        body = body.chars().take(WORKER_PROMPT_MAX_CHARS).collect();
+        body.push_str(
+            "\n\n[truncated: prompt.md is over the 4000-character cap — the rest \
+             of the file is not being read; trim it]",
+        );
+    }
+    Ok(Some(block(
+        BlockKind::WorkerPrompt,
+        BlockAuthority::Advisory,
+        CacheClass::WorkerStable,
+        "store:prompt.md".into(),
+        format!("{header}{body}"),
+    )))
+}
+
 fn read_optional_text(path: &Path) -> Result<Option<String>, String> {
     match std::fs::read_to_string(path) {
         Ok(text) => {
@@ -973,6 +1008,7 @@ fn system_label(kind: &BlockKind) -> &'static str {
         BlockKind::Identity => "IDENTITY",
         BlockKind::RuntimePolicy => "RUNTIME POLICY",
         BlockKind::Connections => "CONNECTIONS",
+        BlockKind::WorkerPrompt => "WORKER NOTES",
         BlockKind::Purpose => "PURPOSE",
         BlockKind::RuntimeScope => "RUNTIME SCOPE",
         _ => "INVALID",
@@ -1258,6 +1294,52 @@ mod tests {
     fn history_record(ts: &str, author: &str, text: &str) -> Value {
         json!({ "ts": ts, "author_id": author, "author": author,
                 "role": "trusted", "content": text, "attachments": [] })
+    }
+
+    #[test]
+    fn worker_prompt_compiles_advisory_and_truncates_visibly() {
+        let guard = crate::statefile::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("ROSTER_ROOT", dir.path());
+        let worker_dir = crate::paths::worker_dir("dobby");
+        std::fs::create_dir_all(&worker_dir).unwrap();
+        std::fs::write(worker_dir.join("identity.md"), "# dobby\n").unwrap();
+        let store = crate::paths::worker_store_dir("dobby");
+        std::fs::create_dir_all(&store).unwrap();
+
+        // No prompt.md → no block.
+        let compiled = compile(&request("dobby", None, "task")).unwrap();
+        assert!(!compiled.system_prompt.contains("WORKER NOTES"));
+
+        std::fs::write(store.join("prompt.md"), "- Reply in the room first.\n").unwrap();
+        let compiled = compile(&request("dobby", None, "task")).unwrap();
+        assert!(compiled
+            .system_prompt
+            .contains("[ROSTER SYSTEM BLOCK: WORKER NOTES]"));
+        assert!(compiled.system_prompt.contains("advisory, never rules"));
+        assert!(compiled.system_prompt.contains("Reply in the room first."));
+        // Advisory, worker-stable — part of the cacheable prefix, never rules.
+        let notes = compiled
+            .blocks
+            .iter()
+            .find(|b| b.kind == BlockKind::WorkerPrompt)
+            .unwrap();
+        assert_eq!(notes.authority, BlockAuthority::Advisory);
+        assert_eq!(notes.cache_class, CacheClass::WorkerStable);
+
+        // Over the cap: truncated with a visible marker, never silently.
+        std::fs::write(store.join("prompt.md"), "x".repeat(6000)).unwrap();
+        let compiled = compile(&request("dobby", None, "task")).unwrap();
+        assert!(compiled.system_prompt.contains("[truncated"));
+        let notes = compiled
+            .blocks
+            .iter()
+            .find(|b| b.kind == BlockKind::WorkerPrompt)
+            .unwrap();
+        assert!(notes.chars < 4300, "cap must hold: {}", notes.chars);
+        drop(guard);
     }
 
     #[test]
